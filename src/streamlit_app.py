@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import csv
+import io
 import re
 from functools import lru_cache
+from html import escape
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -100,27 +103,46 @@ def list_available_models(dataset_name: str) -> List[str]:
 
 
 def parse_sequence_input(raw_value: str, title_to_id: Dict[str, int]) -> Tuple[List[int], List[str]]:
-    tokens = [token.strip() for token in re.split(r"[,\n;]+", raw_value) if token.strip()]
+    tokens: List[str] = []
+    reader = csv.reader(io.StringIO(raw_value), skipinitialspace=True)
+    for row in reader:
+        for cell in row:
+            parts = [part.strip() for part in cell.split(";") if part.strip()]
+            tokens.extend(parts)
+
+    if not tokens and raw_value.strip():
+        tokens = [raw_value.strip()]
+
     sequence: List[int] = []
     unresolved: List[str] = []
 
-    normalized_titles = {title.lower(): movie_id for title, movie_id in title_to_id.items()}
+    normalized_titles = {re.sub(r"\s+", " ", title.lower()).strip(): movie_id for title, movie_id in title_to_id.items()}
 
     for token in tokens:
-        if token.isdigit():
-            sequence.append(int(token))
+        clean_token = token.strip().strip('"').strip("'")
+        if not clean_token:
             continue
 
-        movie_id = normalized_titles.get(token.lower())
+        if clean_token.isdigit():
+            sequence.append(int(clean_token))
+            continue
+
+        id_match = re.search(r"\((\d+)\)\s*$", clean_token)
+        if id_match:
+            sequence.append(int(id_match.group(1)))
+            continue
+
+        normalized_token = re.sub(r"\s+", " ", clean_token.lower()).strip()
+        movie_id = normalized_titles.get(normalized_token)
         if movie_id is not None:
             sequence.append(movie_id)
             continue
 
-        matches = [movie_id for title, movie_id in title_to_id.items() if token.lower() in title.lower()]
+        matches = [movie_id for title, movie_id in title_to_id.items() if normalized_token in title.lower()]
         if len(matches) == 1:
             sequence.append(matches[0])
         else:
-            unresolved.append(token)
+            unresolved.append(clean_token)
 
     return sequence, unresolved
 
@@ -147,6 +169,11 @@ def apply_sample_sequence(sample_sequence: List[int]) -> None:
     st.session_state["watch_sequence"] = ", ".join(str(movie_id) for movie_id in sample_sequence)
 
 
+def append_movie_to_sequence(movie_id: int) -> None:
+    existing = st.session_state.get("watch_sequence", "").strip()
+    st.session_state["watch_sequence"] = f"{existing}, {movie_id}" if existing else str(movie_id)
+
+
 def main() -> None:
     dataset_cfg, model_cfg = load_configs()
     dataset_name = dataset_cfg["dataset"]
@@ -158,144 +185,239 @@ def main() -> None:
     st.markdown(
         """
         <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap');
+
         :root {
-            --bg: #f4efe6;
-            --panel: rgba(255, 255, 255, 0.78);
-            --panel-border: rgba(26, 29, 35, 0.09);
-            --text: #17181d;
-            --muted: #5e6370;
-            --accent: #b04e2e;
-            --accent-2: #2a6f97;
+            --bg: #050506;
+            --panel: rgba(15, 15, 18, 0.75);
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --accent: #e11d48;
+            --accent-glow: rgba(225, 29, 72, 0.15);
+            --card-bg: rgba(255, 255, 255, 0.03);
         }
 
         .stApp {
-            background:
-                radial-gradient(circle at top left, rgba(176, 78, 46, 0.16), transparent 28%),
-                radial-gradient(circle at top right, rgba(42, 111, 151, 0.13), transparent 24%),
-                linear-gradient(180deg, #fbf7f1 0%, #f4efe6 100%);
+            background-color: var(--bg);
+            background-image: 
+                radial-gradient(circle at 0% 0%, rgba(225, 29, 72, 0.12) 0%, transparent 40%),
+                radial-gradient(circle at 100% 100%, rgba(225, 29, 72, 0.08) 0%, transparent 40%);
             color: var(--text);
+            font-family: "Inter", -apple-system, sans-serif;
+        }
+
+        .block-container {
+            padding-top: 2rem;
+            max-width: 1100px;
         }
 
         .hero {
-            padding: 1.2rem 1.4rem;
+            padding: 2.5rem 2rem;
             border: 1px solid var(--panel-border);
-            border-radius: 24px;
+            border-radius: 28px;
             background: var(--panel);
-            backdrop-filter: blur(14px);
-            box-shadow: 0 20px 50px rgba(17, 17, 17, 0.06);
-            margin-bottom: 1rem;
+            backdrop-filter: blur(20px);
+            margin-bottom: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
         }
 
         .eyebrow {
             text-transform: uppercase;
-            letter-spacing: 0.18em;
-            font-size: 0.72rem;
-            color: var(--accent-2);
-            margin-bottom: 0.45rem;
-            font-weight: 700;
+            letter-spacing: 0.2em;
+            font-size: 0.75rem;
+            color: var(--accent);
+            margin-bottom: 0.75rem;
+            font-weight: 800;
         }
 
         .hero h1 {
             margin: 0;
-            font-family: Georgia, Cambria, serif;
-            font-size: clamp(2.1rem, 4vw, 3.8rem);
-            line-height: 1.03;
-            color: var(--text);
+            font-family: "Outfit", sans-serif;
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 800;
+            line-height: 1.1;
+            color: white;
+            letter-spacing: -0.02em;
         }
 
         .hero p {
-            margin: 0.85rem 0 0;
-            max-width: 70ch;
-            font-size: 1.03rem;
+            margin: 1.25rem 0 0;
+            max-width: 65ch;
+            font-size: 1.1rem;
             color: var(--muted);
+            line-height: 1.6;
         }
 
         .metric-card {
-            padding: 1rem 1rem 0.9rem;
+            padding: 1.25rem;
             border-radius: 20px;
             border: 1px solid var(--panel-border);
-            background: rgba(255, 255, 255, 0.72);
-            box-shadow: 0 12px 30px rgba(17, 17, 17, 0.05);
-            height: 100%;
+            background: var(--card-bg);
+            transition: all 0.3s ease;
+        }
+
+        .metric-card:hover {
+            border-color: rgba(225, 29, 72, 0.3);
+            background: rgba(225, 29, 72, 0.02);
         }
 
         .metric-label {
-            font-size: 0.74rem;
+            font-size: 0.7rem;
             text-transform: uppercase;
-            letter-spacing: 0.14em;
+            letter-spacing: 0.15em;
             color: var(--muted);
-            margin-bottom: 0.55rem;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
         }
 
         .metric-value {
-            font-family: Georgia, Cambria, serif;
-            font-size: 1.5rem;
+            font-family: "Outfit", sans-serif;
+            font-size: 1.4rem;
             font-weight: 700;
-            color: var(--text);
-            margin-bottom: 0.35rem;
+            color: white;
+            margin-bottom: 0.25rem;
         }
 
         .metric-help {
             color: var(--muted);
-            font-size: 0.88rem;
+            font-size: 0.8rem;
         }
 
         .section-title {
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            letter-spacing: 0.14em;
-            color: var(--muted);
-            margin: 1.4rem 0 0.65rem;
+            font-family: "Outfit", sans-serif;
+            font-size: 1.25rem;
             font-weight: 700;
+            color: white;
+            margin: 2.5rem 0 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .section-title::after {
+            content: "";
+            height: 1px;
+            flex-grow: 1;
+            background: var(--panel-border);
         }
 
         .recommendation-card {
-            padding: 1rem 1.05rem;
-            border-radius: 18px;
+            padding: 1.25rem;
+            border-radius: 20px;
             border: 1px solid var(--panel-border);
-            background: rgba(255, 255, 255, 0.84);
-            box-shadow: 0 14px 30px rgba(17, 17, 17, 0.05);
-            margin-bottom: 0.7rem;
+            background: var(--card-bg);
+            margin-bottom: 1rem;
+            transition: transform 0.2s ease;
+        }
+
+        .recommendation-card:hover {
+            transform: translateX(4px);
+            border-color: rgba(225, 29, 72, 0.4);
         }
 
         .recommendation-rank {
-            font-size: 0.74rem;
+            font-size: 0.7rem;
             text-transform: uppercase;
-            letter-spacing: 0.14em;
+            letter-spacing: 0.15em;
             color: var(--accent);
-            margin-bottom: 0.3rem;
+            margin-bottom: 0.4rem;
             font-weight: 700;
         }
 
         .recommendation-title {
-            font-size: 1.02rem;
-            color: var(--text);
+            font-size: 1.15rem;
+            color: white;
             font-weight: 700;
             margin-bottom: 0.25rem;
         }
 
         .recommendation-subtitle {
-            font-size: 0.88rem;
+            font-size: 0.9rem;
             color: var(--muted);
         }
 
-        .stTextArea textarea {
-            border-radius: 18px;
-            border: 1px solid rgba(26, 29, 35, 0.12);
-            background: rgba(255, 255, 255, 0.92);
+        /* Streamlit Overrides */
+        .stMultiSelect [data-baseweb="select"] > div {
+            border-radius: 16px;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+        }
+
+        .stMultiSelect [data-baseweb="tag"] {
+            background: var(--accent) !important;
+            border-radius: 8px;
+            color: white !important;
+        }
+
+        .stSelectbox [data-baseweb="select"] > div {
+            border-radius: 14px;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+        }
+
+        [data-testid="stExpander"] {
+            border-radius: 20px;
+            background: var(--panel);
+            border: 1px solid var(--panel-border) !important;
+        }
+
+        [data-testid="stMetricValue"] {
+            color: white;
         }
 
         .stButton button {
-            border-radius: 999px;
+            border-radius: 14px;
             border: none;
-            background: linear-gradient(135deg, var(--accent) 0%, #d07b43 100%);
+            background: var(--accent);
             color: white;
-            padding: 0.65rem 1rem;
+            padding: 0.6rem 1.5rem;
             font-weight: 700;
+            transition: all 0.2s ease;
+            width: 100%;
         }
 
         .stButton button:hover {
-            box-shadow: 0 10px 20px rgba(176, 78, 46, 0.24);
+            background: #f43f5e;
+            box-shadow: 0 0 20px rgba(225, 29, 72, 0.4);
+        }
+
+        .stSlider [data-baseweb="slider"] [role="slider"] {
+            background-color: var(--accent);
+        }
+
+        .stSlider [data-baseweb="slider"] > div > div {
+            background-color: var(--accent) !important;
+        }
+
+        [data-testid="stHeader"] {
+            background: transparent;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--panel-border);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--accent);
         }
         </style>
         """,
@@ -305,9 +427,9 @@ def main() -> None:
     st.markdown(
         """
         <div class="hero">
-          <div class="eyebrow">Local deep learning recommender</div>
-          <h1>Movie Recommender Studio</h1>
-          <p>Paste a watch sequence, choose a trained model, and get the next-movie predictions from the local checkpoint. Titles are resolved from MovieLens metadata when available.</p>
+          <div class="eyebrow">Deep learning powered</div>
+          <h1>Recommender Studio</h1>
+          <p>Explore movie recommendations using state-of-the-art sequential models. Build your watch history below and let the neural engine predict your next favorite film.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -315,122 +437,94 @@ def main() -> None:
 
     titles = load_movie_titles(dataset_name, data_path)
     title_to_id = {title: movie_id for movie_id, title in titles.items()}
+    id_to_title = {movie_id: title for title, movie_id in title_to_id.items()}
 
-    if "watch_sequence" not in st.session_state:
-        st.session_state.watch_sequence = "1, 5, 20"
-
-    model_options = available_models or [default_model]
-
-    selected_model = st.selectbox(
-        "Model",
-        options=model_options,
-        index=model_options.index(default_model) if default_model in model_options else 0,
-        help="Choose a trained artifact from artifacts/<dataset>/<model>/",
-    )
-
+    # --- CONFIGURATION PANEL (Always Visible) ---
+    st.markdown('<div class="section-title">Configuration</div>', unsafe_allow_html=True)
+    
+    # Using a cleaner layout for config
+    m_col_select, m_col1, m_col2, m_col3 = st.columns([1.5, 1, 1, 1])
+    
+    with m_col_select:
+        model_options = available_models or [default_model]
+        selected_model = st.selectbox(
+            "Neural Checkpoint",
+            options=model_options,
+            index=model_options.index(default_model) if default_model in model_options else 0,
+            key="model_selector"
+        )
+    
     selected_metadata = load_artifact_metadata(dataset_name, selected_model)
+    
+    with m_col1:
+        render_metric_card("Dataset", dataset_name, "Active source")
+    with m_col2:
+        render_metric_card("Architecture", selected_metadata["model"].upper(), "Network type")
+    with m_col3:
+        render_metric_card("Embedding", f"{selected_metadata['hidden_size']}d", "Vector width")
 
-    col_a, col_b, col_c, col_d = st.columns(4)
+    # --- SEQUENCE BUILDER ---
+    st.markdown('<div class="section-title">Sequence Builder</div>', unsafe_allow_html=True)
+    
+    movie_options = sorted(titles.keys(), key=lambda x: titles[x].lower())
+    
+    # Pre-declare containers to control layout vs execution order
+    builder_container = st.container()
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2])
+    
+    # Handle sample loading BEFORE the multiselect is rendered
+    if ctrl_col1.button("✨ Load Sample", use_container_width=True):
+        st.session_state["sequence_multiselect"] = list(titles.keys())[:5]
+        st.rerun()
 
-    with col_a:
-        render_metric_card("Dataset", dataset_name, "Configured in config/dataset.yaml")
-    with col_b:
-        render_metric_card("Model", selected_metadata["model"].upper(), "Loaded from artifacts")
-    with col_c:
-        render_metric_card("Sequence Length", str(selected_metadata["max_seq_len"]), "Model input window")
-    with col_d:
-        render_metric_card("Hidden Size", str(selected_metadata["hidden_size"]), "Sequence encoder width")
-
-    st.markdown('<div class="section-title">Controls</div>', unsafe_allow_html=True)
-    controls_left, controls_right = st.columns([1.25, 0.85])
-
-    with controls_left:
-        st.text_area(
-            "Watch sequence",
-            key="watch_sequence",
-            height=120,
-            help="Enter movie IDs, exact titles, or title fragments separated by commas, semicolons, or new lines.",
+    with builder_container:
+        selected_ids = st.multiselect(
+            "Your Watch History",
+            options=movie_options,
+            format_func=lambda x: titles.get(x, f"Movie {x}"),
+            placeholder="Search and select movies you've watched...",
+            help="The order of selection represents your watch sequence.",
+            key="sequence_multiselect"
         )
-        top_k = st.slider("Recommendations to return", min_value=1, max_value=20, value=3, step=1)
+    
+    with ctrl_col2:
+        run_clicked = st.button("🚀 Generate", use_container_width=True, type="primary")
 
-    with controls_right:
-        st.markdown(
-            """
-            <div class="recommendation-card">
-              <div class="recommendation-rank">How it works</div>
-              <div class="recommendation-title">1. Pick a trained checkpoint</div>
-              <div class="recommendation-subtitle">The app reads metadata and model weights from the local artifacts folder.</div>
-            </div>
-            <div class="recommendation-card">
-              <div class="recommendation-rank">Input</div>
-              <div class="recommendation-title">2. Enter a user sequence</div>
-              <div class="recommendation-subtitle">Short sequences are padded automatically to match the model window.</div>
-            </div>
-            <div class="recommendation-card">
-              <div class="recommendation-rank">Output</div>
-              <div class="recommendation-title">3. Review ranked suggestions</div>
-              <div class="recommendation-subtitle">Already-seen items are excluded from the recommendation list.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    button_col, sample_col = st.columns([0.3, 0.7])
-    with button_col:
-        run_clicked = st.button("Generate recommendations", use_container_width=True)
-    with sample_col:
-        sample_sequence = [movie_id for movie_id in list(titles.keys())[:3]] if titles else [1, 5, 20]
-        st.button(
-            "Use a sample sequence",
-            use_container_width=True,
-            on_click=apply_sample_sequence,
-            args=(sample_sequence,),
-        )
-
-    sequence_input = st.session_state.watch_sequence
-    sequence, unresolved = parse_sequence_input(sequence_input, title_to_id)
-
-    if unresolved:
-        st.warning("Some entries could not be matched: " + ", ".join(unresolved))
-
-    if sequence:
-        st.markdown('<div class="section-title">Parsed Sequence</div>', unsafe_allow_html=True)
-        st.write(
-            ", ".join(format_movie(movie_id, titles) for movie_id in sequence)
-        )
-
+    with ctrl_col3:
+        top_k = st.slider("Predictions", min_value=1, max_value=20, value=5, label_visibility="collapsed")
+    
+    # --- RESULTS ---
+    # We use a combined check for the button click
     if run_clicked:
-        if not sequence:
-            st.error("Enter at least one valid movie ID or title before generating recommendations.")
-            return
-
-        try:
-            service = load_service(dataset_name, selected_model)
-            recommendations = service.recommend(sequence, top_k=top_k)
-        except FileNotFoundError as exc:
-            st.error(str(exc))
-            return
-        except Exception as exc:
-            st.error(f"Recommendation failed: {exc}")
-            return
-
-        st.markdown('<div class="section-title">Recommendations</div>', unsafe_allow_html=True)
-        if not recommendations:
-            st.info("No unseen recommendations were produced for the supplied sequence.")
-            return
-
-        for rank, movie_id in enumerate(recommendations, start=1):
-            title = titles.get(movie_id, "Unknown title")
-            st.markdown(
-                f"""
-                <div class="recommendation-card">
-                  <div class="recommendation-rank">Rank {rank}</div>
-                  <div class="recommendation-title">{title}</div>
-                  <div class="recommendation-subtitle">Movie ID {movie_id}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        if not selected_ids:
+            st.error("Please add at least one movie to your history.")
+        else:
+            with st.spinner("Analyzing patterns..."):
+                try:
+                    service = load_service(dataset_name, selected_model)
+                    recommendations = service.recommend(selected_ids, top_k=top_k)
+                    
+                    st.markdown('<div class="section-title">Predicted Next Watches</div>', unsafe_allow_html=True)
+                    
+                    if not recommendations:
+                        st.info("No new recommendations found for this sequence.")
+                    else:
+                        grid_cols = st.columns(2)
+                        for idx, movie_id in enumerate(recommendations):
+                            with grid_cols[idx % 2]:
+                                title = titles.get(movie_id, "Unknown Movie")
+                                st.markdown(
+                                    f"""
+                                    <div class="recommendation-card">
+                                      <div class="recommendation-rank">Recommendation #{idx+1}</div>
+                                      <div class="recommendation-title">{title}</div>
+                                      <div class="recommendation-subtitle">ID: {movie_id}</div>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
 
 if __name__ == "__main__":
