@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+artifacts/
+data/ml-100k/
+data/ml-1m/
+
+.venv/
+venv/

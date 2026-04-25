@@ -1,0 +1,2 @@
+dataset: ml-100k  # switch to ml-1m later
+data_path: ./data/
