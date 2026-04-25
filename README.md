@@ -78,6 +78,22 @@ Example output format:
 }
 ```
 
+## Streamlit UI
+
+Launch the interactive local UI:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Or use the CLI entry point:
+
+```bash
+python main.py --ui
+```
+
+The UI lets you paste movie IDs or titles, switch between trained models, and view ranked recommendations with MovieLens titles when metadata is available.
+
 ## Local API (FastAPI)
 
 Start API server:

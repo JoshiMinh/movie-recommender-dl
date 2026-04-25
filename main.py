@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List
 
@@ -142,10 +144,16 @@ def run_demo(args) -> None:
     print("Demo response:", {"recommendations": recs})
 
 
+def run_ui() -> None:
+    ui_path = Path(__file__).resolve().parent / "streamlit_app.py"
+    subprocess.run([sys.executable, "-m", "streamlit", "run", str(ui_path)], check=True)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Deep Learning Movie Recommender")
     parser.add_argument("--train", action="store_true", help="Train model(s)")
     parser.add_argument("--demo", action="store_true", help="Run local recommendation demo")
+    parser.add_argument("--ui", action="store_true", help="Launch the Streamlit UI")
     parser.add_argument(
         "--model",
         type=str,
@@ -174,8 +182,12 @@ def main():
     try:
         args = parse_args()
 
-        if not args.train and not args.demo:
-            raise ValueError("Use at least one mode: --train and/or --demo")
+        if not args.train and not args.demo and not args.ui:
+            raise ValueError("Use at least one mode: --train, --demo, and/or --ui")
+
+        if args.ui:
+            run_ui()
+            return
 
         if args.train:
             run_training(args)
