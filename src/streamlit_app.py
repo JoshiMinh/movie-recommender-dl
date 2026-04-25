@@ -21,7 +21,7 @@ st.set_page_config(
 
 
 def _root_dir() -> Path:
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 @lru_cache(maxsize=1)
@@ -141,6 +141,10 @@ def render_metric_card(label: str, value: str, help_text: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def apply_sample_sequence(sample_sequence: List[int]) -> None:
+    st.session_state["watch_sequence"] = ", ".join(str(movie_id) for movie_id in sample_sequence)
 
 
 def main() -> None:
@@ -376,9 +380,12 @@ def main() -> None:
         run_clicked = st.button("Generate recommendations", use_container_width=True)
     with sample_col:
         sample_sequence = [movie_id for movie_id in list(titles.keys())[:3]] if titles else [1, 5, 20]
-        if st.button("Use a sample sequence", use_container_width=True):
-            st.session_state.watch_sequence = ", ".join(str(movie_id) for movie_id in sample_sequence)
-            st.rerun()
+        st.button(
+            "Use a sample sequence",
+            use_container_width=True,
+            on_click=apply_sample_sequence,
+            args=(sample_sequence,),
+        )
 
     sequence_input = st.session_state.watch_sequence
     sequence, unresolved = parse_sequence_input(sequence_input, title_to_id)

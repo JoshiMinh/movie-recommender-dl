@@ -27,7 +27,9 @@ movie-recommender-dl/
 │   ├── data/
 │   ├── evaluation/
 │   ├── models/
-│   └── training/
+│   ├── training/
+│   ├── cli.py
+│   └── streamlit_app.py
 ├── main.py
 ├── requirements.txt
 └── README.md
@@ -50,25 +52,20 @@ No code changes are needed to switch between MovieLens 100K and 1M.
 pip install -r requirements.txt
 ```
 
-## Train
+## Run Console Menu
 
-Train all models and print comparison table:
-
-```bash
-python main.py --train --model all
-```
-
-Train a single model:
+Launch the interactive console menu:
 
 ```bash
-python main.py --train --model lstm
+python main.py
 ```
 
-## Demo
+Menu options:
 
-```bash
-python main.py --demo
-```
+- Select dataset
+- Run Train
+- Demo
+- Demo with UI
 
 Example output format:
 
@@ -83,13 +80,13 @@ Example output format:
 Launch the interactive local UI:
 
 ```bash
-streamlit run streamlit_app.py
+streamlit run src/streamlit_app.py
 ```
 
-Or use the CLI entry point:
+Or use the console menu (`Demo with UI`) from:
 
 ```bash
-python main.py --ui
+python main.py
 ```
 
 The UI lets you paste movie IDs or titles, switch between trained models, and view ranked recommendations with MovieLens titles when metadata is available.
