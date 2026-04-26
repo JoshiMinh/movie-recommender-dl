@@ -404,6 +404,27 @@ def main() -> None:
         [data-testid="stHeader"] {
             background: transparent;
         }
+        
+        .stTabs [data-baseweb="tab-list"] {
+            background-color: transparent;
+            gap: 1rem;
+        }
+        
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            border-radius: 12px;
+            background-color: var(--panel);
+            border: 1px solid var(--panel-border);
+            color: var(--muted);
+            padding: 0 1.5rem;
+            font-weight: 600;
+        }
+        
+        .stTabs [aria-selected="true"] {
+            background-color: var(--accent) !important;
+            color: white !important;
+            border-color: var(--accent) !important;
+        }
 
         /* Scrollbar */
         ::-webkit-scrollbar {
@@ -436,96 +457,144 @@ def main() -> None:
     )
 
     titles = load_movie_titles(dataset_name, data_path)
-    title_to_id = {title: movie_id for movie_id, title in titles.items()}
-    id_to_title = {movie_id: title for title, movie_id in title_to_id.items()}
+    
+    tab_studio, tab_dashboard = st.tabs(["🎯 Recommender Studio", "📊 Performance Dashboard"])
 
-    # --- CONFIGURATION PANEL (Always Visible) ---
-    st.markdown('<div class="section-title">Configuration</div>', unsafe_allow_html=True)
-    
-    # Using a cleaner layout for config
-    m_col_select, m_col1, m_col2, m_col3 = st.columns([1.5, 1, 1, 1])
-    
-    with m_col_select:
-        model_options = available_models or [default_model]
-        selected_model = st.selectbox(
-            "Neural Checkpoint",
-            options=model_options,
-            index=model_options.index(default_model) if default_model in model_options else 0,
-            key="model_selector"
-        )
-    
-    selected_metadata = load_artifact_metadata(dataset_name, selected_model)
-    
-    with m_col1:
-        render_metric_card("Dataset", dataset_name, "Active source")
-    with m_col2:
-        render_metric_card("Architecture", selected_metadata["model"].upper(), "Network type")
-    with m_col3:
-        render_metric_card("Embedding", f"{selected_metadata['hidden_size']}d", "Vector width")
+    with tab_studio:
+        # --- CONFIGURATION PANEL ---
+        st.markdown('<div class="section-title">Configuration</div>', unsafe_allow_html=True)
+        
+        m_col_select, m_col1, m_col2, m_col3 = st.columns([1.5, 1, 1, 1])
+        
+        with m_col_select:
+            model_options = available_models or [default_model]
+            selected_model = st.selectbox(
+                "Neural Checkpoint",
+                options=model_options,
+                index=model_options.index(default_model) if default_model in model_options else 0,
+                key="model_selector"
+            )
+        
+        try:
+            selected_metadata = load_artifact_metadata(dataset_name, selected_model)
+            
+            with m_col1:
+                render_metric_card("Dataset", dataset_name, "Active source")
+            with m_col2:
+                render_metric_card("Architecture", selected_metadata.get("model", "N/A").upper(), "Network type")
+            with m_col3:
+                render_metric_card("Embedding", f"{selected_metadata.get('hidden_size', 'N/A')}d", "Vector width")
 
-    # --- SEQUENCE BUILDER ---
-    st.markdown('<div class="section-title">Sequence Builder</div>', unsafe_allow_html=True)
-    
-    movie_options = sorted(titles.keys(), key=lambda x: titles[x].lower())
-    
-    # Pre-declare containers to control layout vs execution order
-    builder_container = st.container()
-    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2])
-    
-    # Handle sample loading BEFORE the multiselect is rendered
-    if ctrl_col1.button("✨ Load Sample", use_container_width=True):
-        st.session_state["sequence_multiselect"] = list(titles.keys())[:5]
-        st.rerun()
+            # --- SEQUENCE BUILDER ---
+            st.markdown('<div class="section-title">Sequence Builder</div>', unsafe_allow_html=True)
+            
+            movie_options = sorted(titles.keys(), key=lambda x: titles[x].lower())
+            
+            builder_container = st.container()
+            ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2])
+            
+            if ctrl_col1.button("✨ Load Sample", use_container_width=True):
+                st.session_state["sequence_multiselect"] = list(titles.keys())[:5]
+                st.rerun()
 
-    with builder_container:
-        selected_ids = st.multiselect(
-            "Your Watch History",
-            options=movie_options,
-            format_func=lambda x: titles.get(x, f"Movie {x}"),
-            placeholder="Search and select movies you've watched...",
-            help="The order of selection represents your watch sequence.",
-            key="sequence_multiselect"
-        )
-    
-    with ctrl_col2:
-        run_clicked = st.button("🚀 Generate", use_container_width=True, type="primary")
+            with builder_container:
+                selected_ids = st.multiselect(
+                    "Your Watch History",
+                    options=movie_options,
+                    format_func=lambda x: titles.get(x, f"Movie {x}"),
+                    placeholder="Search and select movies you've watched...",
+                    help="The order of selection represents your watch sequence.",
+                    key="sequence_multiselect"
+                )
+            
+            with ctrl_col2:
+                run_clicked = st.button("🚀 Generate", use_container_width=True, type="primary")
 
-    with ctrl_col3:
-        top_k = st.slider("Predictions", min_value=1, max_value=20, value=5, label_visibility="collapsed")
-    
-    # --- RESULTS ---
-    # We use a combined check for the button click
-    if run_clicked:
-        if not selected_ids:
-            st.error("Please add at least one movie to your history.")
+            with ctrl_col3:
+                top_k = st.slider("Predictions", min_value=1, max_value=20, value=5, label_visibility="collapsed")
+            
+            if run_clicked:
+                if not selected_ids:
+                    st.error("Please add at least one movie to your history.")
+                else:
+                    with st.spinner("Analyzing patterns..."):
+                        service = load_service(dataset_name, selected_model)
+                        recommendations = service.recommend(selected_ids, top_k=top_k)
+                        
+                        st.markdown('<div class="section-title">Predicted Next Watches</div>', unsafe_allow_html=True)
+                        
+                        if not recommendations:
+                            st.info("No new recommendations found for this sequence.")
+                        else:
+                            grid_cols = st.columns(2)
+                            for idx, movie_id in enumerate(recommendations):
+                                with grid_cols[idx % 2]:
+                                    t = titles.get(movie_id, "Unknown Movie")
+                                    st.markdown(
+                                        f"""
+                                        <div class="recommendation-card">
+                                          <div class="recommendation-rank">Recommendation #{idx+1}</div>
+                                          <div class="recommendation-title">{t}</div>
+                                          <div class="recommendation-subtitle">ID: {movie_id}</div>
+                                        </div>
+                                        """,
+                                        unsafe_allow_html=True
+                                    )
+        except Exception as e:
+            st.error(f"Error loading model: {e}")
+
+    with tab_dashboard:
+        st.markdown('<div class="section-title">Model Comparison</div>', unsafe_allow_html=True)
+        
+        if not available_models:
+            st.warning("No trained models found. Run training in the console first.")
         else:
-            with st.spinner("Analyzing patterns..."):
-                try:
-                    service = load_service(dataset_name, selected_model)
-                    recommendations = service.recommend(selected_ids, top_k=top_k)
-                    
-                    st.markdown('<div class="section-title">Predicted Next Watches</div>', unsafe_allow_html=True)
-                    
-                    if not recommendations:
-                        st.info("No new recommendations found for this sequence.")
-                    else:
-                        grid_cols = st.columns(2)
-                        for idx, movie_id in enumerate(recommendations):
-                            with grid_cols[idx % 2]:
-                                title = titles.get(movie_id, "Unknown Movie")
-                                st.markdown(
-                                    f"""
-                                    <div class="recommendation-card">
-                                      <div class="recommendation-rank">Recommendation #{idx+1}</div>
-                                      <div class="recommendation-title">{title}</div>
-                                      <div class="recommendation-subtitle">ID: {movie_id}</div>
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True
-                                )
-                except Exception as e:
-                    st.error(f"Error: {e}")
+            comparison_data = []
+            histories = {}
+            
+            for m_name in available_models:
+                meta = load_artifact_metadata(dataset_name, m_name)
+                metrics = meta.get("test_metrics", {})
+                comparison_data.append({
+                    "Model": m_name.upper(),
+                    "Optimizer": meta.get("optimizer", "unknown").upper(),
+                    "Hit@5": metrics.get("Hit@5", 0.0),
+                    "Hit@10": metrics.get("Hit@10", 0.0),
+                    "NDCG@10": metrics.get("NDCG@10", 0.0),
+                })
+                if "history" in meta:
+                    histories[m_name] = meta["history"]
 
+            # Comparison Table
+            df_comp = pd.DataFrame(comparison_data)
+            st.dataframe(
+                df_comp,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Loss Curves
+            st.markdown('<div class="section-title">Training Loss Curves</div>', unsafe_allow_html=True)
+            if not histories:
+                st.info("No training history available for current models. Retrain to see loss curves.")
+            else:
+                loss_df_list = []
+                for m_name, hist in histories.items():
+                    if "train_loss" in hist:
+                        for epoch, loss in enumerate(hist["train_loss"]):
+                            loss_df_list.append({
+                                "Epoch": epoch + 1,
+                                "Loss": loss,
+                                "Model": m_name.upper()
+                            })
+                
+                if loss_df_list:
+                    loss_df = pd.DataFrame(loss_df_list)
+                    # Use native streamlit line chart for wide support
+                    chart_data = loss_df.pivot(index="Epoch", columns="Model", values="Loss")
+                    st.line_chart(chart_data)
+                else:
+                    st.info("Training loss data is empty.")
 
 if __name__ == "__main__":
     main()

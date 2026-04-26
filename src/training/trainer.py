@@ -45,11 +45,12 @@ def train_one_model(
     cfg: TrainingConfig,
     device: torch.device,
     save_path: str | Path,
-) -> Tuple[torch.nn.Module, Dict[str, float]]:
+) -> Tuple[torch.nn.Module, Dict[str, float], Dict[str, List[float]]]:
     criterion = nn.CrossEntropyLoss()
     optimizer = _build_optimizer(model, cfg)
     best_metric = -1.0
     best_val_metrics: Dict[str, float] = {}
+    history: Dict[str, List[float]] = {"train_loss": []}
 
     save_path = Path(save_path)
     ensure_dir(save_path.parent)
@@ -72,6 +73,8 @@ def train_one_model(
             total_loss += loss.item() * x.size(0)
 
         avg_train_loss = total_loss / max(1, len(train_loader.dataset))
+        history["train_loss"].append(avg_train_loss)
+        
         val_metrics = evaluate_model(model, val_loader, cfg.top_k, device)
         metric_name = f"Hit@{max(cfg.top_k)}"
         current_metric = val_metrics.get(metric_name, 0.0)
@@ -84,7 +87,9 @@ def train_one_model(
         if current_metric > best_metric:
             best_metric = current_metric
             best_val_metrics = val_metrics
+            if device.type == "cuda":
+                torch.cuda.synchronize()
             torch.save(model.state_dict(), save_path)
 
     model.load_state_dict(torch.load(save_path, map_location=device))
-    return model, best_val_metrics
+    return model, best_val_metrics, history

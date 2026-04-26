@@ -1,147 +1,127 @@
-# movie-recommender-dl
+# Deep Learning Movie Recommender System
 
-Deep learning next-movie recommendation using user watch sequence:
+A sophisticated next-item recommendation engine powered by sequence modeling (RNN, LSTM, GRU) and high-dimensional embeddings. This system predicts the next movie a user is likely to watch based on their historical watch sequence.
 
-- Input: `[m1, m2, m3]`
-- Output: predicted next movie `m4`
+---
 
-Implements three sequence models with a shared embedding concept:
+## 🚀 Key Features
 
-- RNN
-- LSTM
-- GRU
+*   **Sequence Modeling**: Uses Recurrent Neural Networks (RNN), Long Short-Term Memory (LSTM), and Gated Recurrent Units (GRU) to capture temporal dependencies in watch history.
+*   **Dual Dataset Support**: Native integration for MovieLens 100K and MovieLens 1M datasets with a single configuration switch.
+*   **Performance Dashboard**: A premium Streamlit UI to visualize training loss curves, compare model metrics (HitRate, NDCG), and test recommendations interactively.
+*   **Flexible Training**: Interactive CLI supports model selection, optimizer tuning (Adam/SGD), and dynamic hardware device switching (CPU/CUDA).
+*   **GPU Acceleration**: Full support for NVIDIA CUDA training for high-performance sequence modeling.
 
-Everything runs 100% locally.
+---
 
-## Project Structure
+## 📂 Project Structure
 
 ```text
 movie-recommender-dl/
-├── config/
-│   ├── dataset.yaml
-│   ├── model.yaml
-│   └── train.yaml
-├── data/
+├── artifacts/          # Trained model weights and performance metadata
+├── config/             # YAML configuration for dataset, model, and training
+├── data/               # MovieLens dataset storage
 ├── src/
-│   ├── api/
-│   ├── data/
-│   ├── evaluation/
-│   ├── models/
-│   ├── training/
-│   ├── cli.py
-│   └── streamlit_app.py
-├── main.py
-├── requirements.txt
-└── README.md
+│   ├── api/            # Inference service and FastAPI app
+│   ├── data/           # Dataset loading and sequence preprocessing
+│   ├── evaluation/     # Metrics (Hit@K, NDCG@K) and comparison tools
+│   ├── models/         # PyTorch implementations of RNN, LSTM, and GRU
+│   ├── training/       # Training loops and loss history tracking
+│   ├── cli.py          # Interactive console interface
+│   └── streamlit_app.py # Visualization and demo dashboard
+├── main.py             # Application entry point
+├── requirements.txt    # Project dependencies
+└── README.md           # Documentation
 ```
 
-## Dataset Config (Single Switch)
+---
 
-Edit only `config/dataset.yaml` to swap datasets:
+## 🛠️ Setup & Installation
 
-```yaml
-dataset: ml-100k  # switch to ml-1m later
-data_path: ./data/
-```
-
-No code changes are needed to switch between MovieLens 100K and 1M.
-
-## Setup
-
+### 1. Basic Installation (CPU)
 ```bash
 pip install -r requirements.txt
 ```
 
-## Run Console Menu
+### 2. GPU Support (Recommended for ML-1M)
+If you have an NVIDIA GPU, install the CUDA-enabled version of PyTorch:
 
-Launch the interactive console menu:
+```bash
+# Uninstall existing CPU version
+pip uninstall torch torchvision torchaudio -y
 
+# Install CUDA 12.4 version
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 --force-reinstall
+```
+
+### 3. Verify Hardware Detection
+```bash
+python -c "import torch; print('CUDA Available:', torch.cuda.is_available())"
+```
+
+---
+
+## 🎮 Usage Guide
+
+### Launching the Console Menu
+The primary entry point for managing the system:
 ```bash
 python main.py
 ```
+**Menu Options:**
+1.  **Select Dataset**: Toggle between `ml-100k` and `ml-1m`.
+2.  **Run Train**: Train a specific model or "all" models with your choice of optimizer and device.
+3.  **Comprehensive Comparison**: Automatically trains all 6 combinations (RNN/LSTM/GRU x Adam/SGD).
+4.  **Demo**: Quick command-line recommendation test.
+5.  **Demo with UI**: Launches the Streamlit Performance Dashboard.
 
-Menu options:
-
-- Select dataset
-- Run Train
-- Demo
-- Demo with UI
-
-Example output format:
-
-```json
-{
-  "recommendations": [42, 18, 7]
-}
-```
-
-## Streamlit UI
-
-Launch the interactive local UI:
-
+### Streamlit Dashboard
+Visualize results and explore the neural engine:
 ```bash
 streamlit run src/streamlit_app.py
 ```
+*   **Recommender Studio**: Build custom watch sequences and see real-time predictions.
+*   **Performance Dashboard**: Compare HitRate metrics and training loss curves across different model checkpoints.
 
-Or use the console menu (`Demo with UI`) from:
+---
 
-```bash
-python main.py
+## ⚙️ Configuration
+
+### Dataset (`config/dataset.yaml`)
+```yaml
+dataset: ml-1m  # ml-100k or ml-1m
+data_path: ./data/
 ```
 
-The UI lets you paste movie IDs or titles, switch between trained models, and view ranked recommendations with MovieLens titles when metadata is available.
+### Model Architecture (`config/model.yaml`)
+*   `embedding_dim`: Dimensionality of movie vectors.
+*   `hidden_size`: Number of hidden units in the recurrent layer.
+*   `max_seq_len`: Number of previous movies considered for each prediction.
+*   `dropout`: Regularization factor to prevent overfitting.
 
-## Local API (FastAPI)
+---
 
-Start API server:
+## 📊 Performance & Optimization
 
-```bash
-uvicorn src.api.app:app --reload
-```
+The system compares different architectures and optimizers:
+*   **Architectures**: LSTM and GRU typically outperform standard RNNs by effectively managing long-term memory.
+*   **Optimizers**: Adam generally provides faster convergence and higher final HitRate compared to SGD.
+*   **Metrics**: Evaluated using **Hit Rate @ K** (Did the actual next movie appear in the top K recommendations?) and **NDCG** (Was the actual next movie ranked highly?).
 
-Request:
+---
 
-```http
-POST /recommend
-Content-Type: application/json
+## 🆘 Troubleshooting
 
-{
-  "user_sequence": [1, 5, 20],
-  "top_k": 3
-}
-```
+### CUDA "Illegal Instruction" Error
+If training crashes on your GPU with an "illegal instruction" error:
+1.  **Update Drivers**: Ensure your NVIDIA drivers are the latest version.
+2.  **Switch to CPU**: During the CLI prompt, select **`cpu`** to bypass GPU hardware issues.
+3.  **Use LSTM/GRU**: These models use more robust kernels than the basic RNN and are less likely to trigger hardware faults.
 
-Response:
+### Dataset Not Found
+Ensure you have placed the MovieLens ZIP files (`ml-100k.zip` or `ml-1m.zip`) in the root or `data/` directory. The system will automatically extract them on the first run.
 
-```json
-{
-  "recommendations": [42, 18, 7]
-}
-```
+---
 
-## Configurable Parameters
-
-In `config/model.yaml`:
-
-- `model` (`rnn` / `lstm` / `gru`)
-- `embedding_dim`
-- `hidden_size`
-- `max_seq_len`
-- `dropout`
-
-In `config/train.yaml`:
-
-- `epochs`
-- `batch_size`
-- `learning_rate`
-- `optimizer` (`sgd` / `adam`)
-- `weight_decay`
-- `top_k`
-
-## Notes
-
-- The loader sorts interactions by timestamp per user.
-- Training samples are built as sequence-to-next-item pairs.
-- Zero-padding is used for short sequences.
-- Best checkpoints are saved under `artifacts/<dataset>/<model>/best_model.pt`.
-- Metadata and ID mappings are saved to `artifacts/<dataset>/<model>/metadata.json`.
+## ⚖️ License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
