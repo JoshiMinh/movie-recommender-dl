@@ -22,7 +22,7 @@ movie-recommender-dl/
 ├── model.py                # PyTorch model definitions (RNN/LSTM/GRU)
 ├── train.py                # Training loops with OOM fallback
 ├── evaluate.py             # Evaluation metrics (Hit@10, Top-1 Accuracy)
-├── Report_and_Demo.ipynb   # Complete pipeline demonstration and analysis
+├── Movie_Recommendation_Pipeline.ipynb   # Complete pipeline demonstration and analysis
 ├── joshiminh movie dl/
 │   ├── main.py            # Application entry point
 │   ├── config/            # YAML configuration files
@@ -148,7 +148,7 @@ optimizer: adam       # Options: adam, sgd
 
 ### Basic Recommendation
 ```python
-from src.api.inference import RecommenderService
+from src.inference import RecommenderService
 
 service = RecommenderService.from_default()
 recommendations = service.recommend([101, 102, 103], top_k=5)

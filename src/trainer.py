@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 import torch
 from torch import nn
 
-from src.evaluation.metrics import evaluate_model
+from src.metrics import evaluate_model
 from src.utils import ensure_dir
 
 

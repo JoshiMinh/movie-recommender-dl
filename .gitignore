@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Notebooks / model artifacts
+training_cache.pt
+artifacts/
+*.pt
+*.pth
+*.ckpt
+
+# Data downloads and archives
+*.zip
+*.tar
+*.gz
+*.bz2
+*.xz

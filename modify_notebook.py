@@ -1,7 +1,7 @@
 import json
 import copy
 
-with open('Report_and_Demo.ipynb', 'r', encoding='utf-8') as f:
+with open('Movie_Recommendation_Pipeline.ipynb', 'r', encoding='utf-8') as f:
     nb = json.load(f)
 
 cells = nb['cells']
@@ -143,7 +143,7 @@ widget_cell = {
 
 cells.append(widget_cell)
 
-with open('Report_and_Demo.ipynb', 'w', encoding='utf-8') as f:
+with open('Movie_Recommendation_Pipeline.ipynb', 'w', encoding='utf-8') as f:
     json.dump(nb, f, indent=1)
     
 print("Notebook updated successfully!")

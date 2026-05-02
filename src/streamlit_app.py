@@ -11,7 +11,7 @@ from typing import Dict, List, Tuple
 import pandas as pd
 import streamlit as st
 
-from src.api.inference import RecommenderService
+from src.inference import RecommenderService
 from src.utils import read_yaml
 
 

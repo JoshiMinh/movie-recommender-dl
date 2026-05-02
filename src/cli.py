@@ -8,11 +8,11 @@ from typing import Dict, List, Tuple
 import torch
 import yaml
 
-from src.api.inference import RecommenderService
-from src.data.dataset import DataConfig, prepare_dataloaders
-from src.evaluation.metrics import evaluate_model, format_comparison_table
-from src.models.sequence_model import NextMovieModel
-from src.training.trainer import TrainingConfig, train_one_model
+from src.inference import RecommenderService
+from src.dataset import DataConfig, prepare_dataloaders
+from src.metrics import evaluate_model, format_comparison_table
+from src.sequence_model import NextMovieModel
+from src.trainer import TrainingConfig, train_one_model
 from src.utils import ROOT_DIR, ensure_dir, read_yaml, save_json
 
 
@@ -160,7 +160,7 @@ def run_ui() -> None:
 
 
 def list_datasets(config_path: str) -> List[str]:
-    from src.data.dataset import DATASET_FILES
+    from src.dataset import DATASET_FILES
     cfg = read_yaml(config_path)
     dataset_cfg = {"data_path": cfg["data_path"]}
     data_path = Path(dataset_cfg.get("data_path", "./data/"))

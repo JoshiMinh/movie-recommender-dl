@@ -5,7 +5,7 @@ from typing import Dict, List
 
 import torch
 
-from src.models.sequence_model import NextMovieModel
+from src.sequence_model import NextMovieModel
 from src.utils import load_json, read_yaml
 
 

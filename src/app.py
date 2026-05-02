@@ -6,7 +6,7 @@ from typing import List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from src.api.inference import RecommenderService
+from src.inference import RecommenderService
 
 
 class RecommendRequest(BaseModel):
