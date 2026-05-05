@@ -1,17 +1,15 @@
 dataset: ml-1m
 data_path: ./data/
-
 model: lstm
 embedding_dim: 64
 hidden_size: 128
 max_seq_len: 10
 dropout: 0.2
-
 batch_size: 256
 epochs: 5
 learning_rate: 0.001
 optimizer: adam
 top_k:
-  - 5
-  - 10
+- 5
+- 10
 weight_decay: 1.0e-05

@@ -18,23 +18,17 @@ A state-of-the-art next-item movie recommendation engine powered by sequence mod
 
 ```
 movie-recommender-dl/
-├── dataset.py              # Data preprocessing and sequence construction
-├── model.py                # PyTorch model definitions (RNN/LSTM/GRU)
-├── train.py                # Training loops with OOM fallback
-├── evaluate.py             # Evaluation metrics (Hit@10, Top-1 Accuracy)
+├── main.py                 # Application entry point
 ├── Movie_Recommendation_Pipeline.ipynb   # Complete pipeline demonstration and analysis
-├── joshiminh movie dl/
-│   ├── main.py            # Application entry point
-│   ├── config/            # YAML configuration files
-│   ├── src/
-│   │   ├── api/           # FastAPI inference service
-│   │   ├── data/          # Dataset handling utilities
-│   │   ├── models/        # Model architecture definitions
-│   │   ├── training/      # Training logic
-│   │   ├── evaluation/    # Evaluation metrics
-│   │   ├── cli.py         # Interactive console interface
-│   │   ├── streamlit_app.py  # Dashboard UI
-│   │   └── utils.py       # Shared utilities
+├── src/
+│   ├── app.py              # FastAPI inference service
+│   ├── dataset.py          # Dataset handling utilities
+│   ├── inference.py        # Recommender service wrapper
+│   ├── metrics.py          # Evaluation metrics
+│   ├── model.py            # Model architecture definitions
+│   ├── streamlit.py        # Dashboard UI
+│   ├── train.py            # Training logic
+│   └── utils.py            # Shared utilities
 ├── data/                   # MovieLens dataset storage
 ├── requirements.txt        # Python dependencies
 └── LICENSE                 # MIT License
@@ -67,15 +61,8 @@ python -c "import torch; print('CUDA Available:', torch.cuda.is_available())"
 
 ## 🎮 Quick Start Guide
 
-### Running the Legacy Pipeline
-```bash
-python train.py
-python evaluate.py
-```
-
 ### Interactive Console Application
 ```bash
-cd "joshiminh movie dl"
 python main.py
 ```
 
@@ -88,7 +75,7 @@ python main.py
 
 ### Streamlit Performance Dashboard
 ```bash
-streamlit run "joshiminh movie dl/src/streamlit_app.py"
+streamlit run src/streamlit.py
 ```
 
 Features:
@@ -98,7 +85,7 @@ Features:
 
 ### FastAPI Inference Service
 ```bash
-uvicorn "joshiminh movie dl/src/api.app:app" --reload
+uvicorn src.app:app --reload
 ```
 
 ## ⚙️ Configuration
@@ -156,9 +143,9 @@ recommendations = service.recommend([101, 102, 103], top_k=5)
 
 ### Custom Model Training
 ```python
-from dataset import MovieSequenceDataset, process_data, load_data
-from model import SequenceRecommender
-from train import train_with_oom_fallback
+from src.dataset import MovieSequenceDataset, process_data, load_data
+from src.model import SequenceRecommender
+from src.trainer import train_with_oom_fallback
 
 ratings_df, movies_df = load_data()
 train_data, val_data, test_data, movie2idx, user2idx = process_data(ratings_df)

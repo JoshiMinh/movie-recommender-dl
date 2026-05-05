@@ -38,8 +38,39 @@ def topk_metrics(logits: torch.Tensor, targets: torch.Tensor, ks: Iterable[int])
 
 
 @torch.no_grad()
-def evaluate_model(model, loader, ks: List[int], device: torch.device) -> Dict[str, float]:
+def evaluate_model(model, loader, ks: List[int] | None = None, device: torch.device | str = "cuda") -> Dict[str, float] | tuple[float, float]:
+    device = torch.device(device) if not isinstance(device, torch.device) else device
     model.eval()
+
+    if ks is None:
+        top1_correct = 0
+        hr10_hits = 0
+        total = 0
+
+        for batch in loader:
+            user_ids, padded_seqs, seq_lengths, targets = batch
+            user_ids = user_ids.to(device)
+            padded_seqs = padded_seqs.to(device)
+            targets = targets.to(device)
+
+            if hasattr(model, "predict"):
+                probs = model.predict(user_ids, padded_seqs, seq_lengths)
+            else:
+                logits = model(user_ids, padded_seqs, seq_lengths)
+                probs = torch.nn.functional.softmax(logits, dim=-1)
+
+            top1_preds = probs.argmax(dim=-1)
+            top1_correct += (top1_preds == targets).sum().item()
+
+            top10_preds = torch.topk(probs, k=10, dim=-1).indices
+            targets_expanded = targets.unsqueeze(1).expand_as(top10_preds)
+            hr10_hits += (top10_preds == targets_expanded).sum().item()
+            total += targets.size(0)
+
+        top1_acc = top1_correct / total if total > 0 else 0.0
+        hr10 = hr10_hits / total if total > 0 else 0.0
+        return top1_acc, hr10
+
     aggregate = {f"Hit@{k}": 0.0 for k in ks}
     aggregate.update({f"Recall@{k}": 0.0 for k in ks})
     aggregate.update({f"NDCG@{k}": 0.0 for k in ks})
