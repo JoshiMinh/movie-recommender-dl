@@ -1,216 +1,284 @@
 # Movie Recommendation System - Deep Learning Edition
 
+An end-to-end sequence recommendation project for predicting the next movie a user is likely to watch.
+The system is built around recurrent neural networks (RNN, LSTM, GRU), trained on MovieLens data,
+and delivered with notebook, CLI, Streamlit, and FastAPI workflows.
+
 ## Overview
 
-A state-of-the-art next-item movie recommendation engine powered by sequence modeling using Recurrent Neural Networks (RNN), Long Short-Term Memory (LSTM), and Gated Recurrent Units (GRU). This system predicts the next movie a user will watch based on their historical viewing sequence, utilizing high-dimensional embeddings and temporal dependency learning.
+This repository implements next-item recommendation as a sequence modeling problem.
+Given a user's historical watch sequence, the model predicts a probability distribution over movies
+and returns the top-k candidates.
 
-## 🚀 Key Features
+The codebase is designed for:
+- Reproducible experimentation.
+- Architecture and optimizer comparison.
+- Practical local deployment for interactive demos.
+- Easy extension for future recommender research.
 
-- **Sequential Recommendation**: Captures temporal dependencies in user watch history using RNN architectures
-- **Multiple Model Architectures**: Compare RNN, LSTM, and GRU implementations with unified interface
-- **Flexible Dataset Support**: Native integration for MovieLens 100K and MovieLens 1M datasets
-- **Comprehensive Training Pipeline**: Interactive CLI with optimizer selection (Adam/SGD), dynamic learning rate tuning, and automatic GPU acceleration
-- **Interactive Visualization**: Streamlit-based performance dashboard with real-time metric tracking and recommendation testing
-- **Production-Ready API**: FastAPI inference service for integration into production systems
-- **Robust Error Handling**: Automatic out-of-memory fallback with batch size optimization
+## Key Features
 
-## 📂 Project Structure
+- Sequential recommendation using temporal interaction history.
+- Three recurrent backbones: RNN, LSTM, GRU.
+- Config-driven training with a single config file.
+- Automated model comparison across optimizers.
+- Interactive Streamlit app for recommendation testing.
+- FastAPI endpoint for programmatic inference.
+- OOM-aware training utility in notebook workflow.
+- Saved artifacts and metadata for reproducibility.
 
-```
+## Repository Structure
+
+```text
 movie-recommender-dl/
-├── main.py                 # Application entry point
-├── Movie_Recommendation_Pipeline.ipynb   # Complete pipeline demonstration and analysis
-├── src/
-│   ├── app.py              # FastAPI inference service
-│   ├── dataset.py          # Dataset handling utilities
-│   ├── inference.py        # Recommender service wrapper
-│   ├── metrics.py          # Evaluation metrics
-│   ├── model.py            # Model architecture definitions
-│   ├── streamlit.py        # Dashboard UI
-│   ├── train.py            # Training logic
-│   └── utils.py            # Shared utilities
-├── data/                   # MovieLens dataset storage
-├── requirements.txt        # Python dependencies
-└── LICENSE                 # MIT License
+├── main.py
+├── config.yml
+├── Movie_Recommendation_Pipeline.ipynb
+├── REPORT.md
+├── README.md
+├── requirements.txt
+├── artifacts/
+├── data/
+└── src/
+    ├── app.py
+    ├── config.py
+    ├── dataset.py
+    ├── inference.py
+    ├── metrics.py
+    ├── model.py
+    ├── streamlit.py
+    ├── train.py
+    └── utils.py
 ```
 
-## 🛠️ Installation & Setup
+## Installation
 
-### 1. Clone Repository
-```bash
-git clone <repository-url>
-cd movie-recommender-dl
-```
+1. Clone the repository.
+2. Create and activate a virtual environment.
+3. Install dependencies.
 
-### 2. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. GPU Support (Optional but Recommended)
-For NVIDIA GPU acceleration with CUDA:
+Optional CUDA setup (if you want GPU acceleration):
+
 ```bash
 pip uninstall torch -y
 pip install torch --index-url https://download.pytorch.org/whl/cu118
 ```
 
-### 4. Verify Installation
+Verify PyTorch device availability:
+
 ```bash
-python -c "import torch; print('CUDA Available:', torch.cuda.is_available())"
+python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-## 🎮 Quick Start Guide
+## Quick Start
 
-### Interactive Console Application
+### 1. Run the Interactive CLI
+
 ```bash
 python main.py
 ```
 
-**Menu Options:**
-1. Select dataset (ml-100k or ml-1m)
-2. Train specific model or all architectures
-3. Run comprehensive comparison (all model × optimizer combinations)
-4. Quick CLI recommendation test
-5. Launch Streamlit interactive dashboard
+Current CLI options:
+- `0`: automated workflow (all models with Adam and SGD).
+- `1`: launch Streamlit UI.
+- `2`: exit.
 
-### Streamlit Performance Dashboard
+### 2. Run Streamlit Directly
+
 ```bash
 streamlit run src/streamlit.py
 ```
 
-Features:
-- **Recommender Studio**: Build custom watch sequences for real-time predictions
-- **Performance Comparison**: Visualize metrics across different model checkpoints
-- **Training Curves**: Monitor loss convergence during training
+### 3. Run FastAPI Service
 
-### FastAPI Inference Service
 ```bash
 uvicorn src.app:app --reload
 ```
 
-## ⚙️ Configuration
+### 4. Run the Notebook Pipeline
 
-### Dataset Configuration (`config/dataset.yaml`)
+Open and run:
+- `Movie_Recommendation_Pipeline.ipynb`
+
+The notebook includes:
+- Data loading and preprocessing.
+- RNN/LSTM/GRU architecture comparison.
+- Optimizer and learning-rate tuning.
+- Interactive widget-based recommendation demo.
+
+## Configuration
+
+The project uses a single config file: `config.yml`.
+
+Current defaults:
+
 ```yaml
-dataset: ml-1m        # Options: ml-100k, ml-1m
+dataset: ml-1m
 data_path: ./data/
-max_seq_len: 50       # Maximum sequence length for recommendations
-```
-
-### Model Configuration (`config/model.yaml`)
-```yaml
-model: lstm           # Options: rnn, lstm, gru
+model: lstm
 embedding_dim: 64
 hidden_size: 128
-dropout: 0.3
-```
-
-### Training Configuration (`config/train.yaml`)
-```yaml
-epochs: 20
+max_seq_len: 10
+dropout: 0.2
 batch_size: 256
+epochs: 5
 learning_rate: 0.001
-optimizer: adam       # Options: adam, sgd
+optimizer: adam
+top_k: [5, 10]
+weight_decay: 1e-05
 ```
 
-## 📊 Technical Details
+Notes:
+- `model` supports `rnn`, `lstm`, `gru`, and CLI override `all`.
+- `max_seq_len` controls truncation length for user history.
+- `top_k` drives evaluation and ranking output.
 
-### Architecture
-- **Embedding Layer**: Learns dense representations for movies and users
-- **Recurrent Layer**: Captures sequential dependencies (RNN/LSTM/GRU)
-- **Output Layer**: Softmax classification over all movies
+## Data Pipeline and Leakage Prevention
 
-### Data Preprocessing
-- Per-user chronological split (80% train, 10% validation, 10% test)
-- Sliding window sequences with maximum length of 50 items
-- Automatic leakage prevention with split-specific sequence generation
-- Padding strategy: left-padding with index 0
+The training and evaluation flow follows sequence-aware best practices:
+- Per-user chronological split.
+- Train/validation/test separation by time.
+- Sequence construction without cross-split leakage.
+- Padding index reserved for variable-length batching.
 
-### Evaluation Metrics
-- **Top-1 Accuracy**: Percentage of correct next-item predictions
-- **Hit Ratio@10**: Percentage of target items in top-10 predictions
-- **NDCG@K**: Normalized Discounted Cumulative Gain for ranking quality
+This is critical for realistic next-item evaluation.
 
-## 🔍 Usage Examples
+## Modeling Approach
 
-### Basic Recommendation
-```python
-from src.inference import RecommenderService
+Core architecture components:
+- Item embedding layer.
+- Recurrent encoder (RNN/LSTM/GRU).
+- Dense output layer with softmax-style ranking over item space.
 
-service = RecommenderService.from_default()
-recommendations = service.recommend([101, 102, 103], top_k=5)
-```
+Why sequence models:
+- User preferences are temporal.
+- Order and recency of watched movies matter.
+- Recurrent units offer a strong baseline with manageable complexity.
 
-### Custom Model Training
-```python
-from src.dataset import MovieSequenceDataset, process_data, load_data
-from src.model import SequenceRecommender
-from src.trainer import train_with_oom_fallback
+## Evaluation Metrics
 
-ratings_df, movies_df = load_data()
-train_data, val_data, test_data, movie2idx, user2idx = process_data(ratings_df)
+The project tracks ranking and exact-hit quality:
 
-# Train with automatic OOM handling
-model, train_losses, val_losses, batch_size = train_with_oom_fallback(
-    create_model_fn=lambda: SequenceRecommender(
-        num_users=len(user2idx),
-        num_movies=len(movie2idx),
-        rnn_type='lstm',
-        hidden_dim=128
-    ),
-    train_dataset=MovieSequenceDataset(train_data),
-    val_dataset=MovieSequenceDataset(val_data),
-    optimizer_name='adam',
-    lr=1e-3,
-    num_epochs=20
-)
-```
+1. Top-1 Accuracy
+Formula: $\text{Top-1} = \frac{\#\text{correct argmax predictions}}{\#\text{samples}}$
 
-## 📈 Performance Benchmarks
+2. Hit@10
+Formula: $\text{Hit@10} = \frac{\#\text{targets in top-10}}{\#\text{samples}}$
 
-The system achieves competitive results across different architectures:
-- **LSTM**: Superior performance with ~25-30% Top-1 Accuracy on MovieLens 1M
-- **GRU**: Faster training with comparable performance
-- **RNN**: Baseline model for architecture comparison
+3. NDCG@10
+Measures ranking quality with stronger weight on higher-ranked relevant items.
 
-Results vary based on dataset size, sequence length, and hyperparameter tuning.
+## Consolidated Report Findings
 
-## 🔐 Reproducibility
+The prior report is merged here for a single source of truth.
 
-All experiments use fixed random seeds for reproducibility:
-```python
-random.seed(42)
-numpy.random.seed(42)
-torch.manual_seed(42)
-torch.cuda.manual_seed_all(42)
-```
+### Requirement Compliance
 
-## 📝 Citation
+All core project requirements were implemented:
+- Next-item recommendation on MovieLens.
+- User/item embedding based recurrent model.
+- RNN, LSTM, GRU architecture support.
+- Chronological split and leakage prevention.
+- Hyperparameter and optimizer comparison.
+- Metric reporting and visualization.
+- Interactive demo and deployable interfaces.
 
-If you use this system in your research, please cite:
-```
+### Architecture Comparison (Reported)
+
+| Architecture | Top-1 Accuracy | Hit@10 | Training Time | Memory |
+|---|---:|---:|---:|---:|
+| RNN | 22.3% | 58.7% | 12 min | 1240 MB |
+| LSTM | 26.8% | 63.2% | 18 min | 1580 MB |
+| GRU | 25.4% | 61.9% | 15 min | 1420 MB |
+
+Interpretation:
+- LSTM delivered the best overall quality.
+- GRU was a good efficiency-quality compromise.
+- Vanilla RNN worked as a useful baseline.
+
+### Optimization Findings (Reported)
+
+Learning rate comparison:
+
+| Learning Rate | Final Val Loss | Convergence | Stability |
+|---|---:|---|---|
+| 1e-2 | 3.72 | Fast | Unstable |
+| 1e-3 | 2.48 | Moderate | Stable |
+| 1e-4 | 2.51 | Slow | Over-damped |
+
+Optimizer comparison:
+
+| Optimizer | Final Val Loss | Behavior |
+|---|---:|---|
+| Adam | 2.42 | Better final quality, adaptive updates |
+| SGD + momentum | 2.68 | Stable but lower final quality |
+
+Regularization takeaway:
+- Dropout around 0.3 gave the best reported generalization tradeoff in report experiments.
+
+## Production Readiness Summary
+
+The repository includes practical deployment paths:
+- Streamlit app for interactive recommendations and comparison dashboards.
+- FastAPI app for service-style inference integration.
+- Artifact and metadata saving for versioned models.
+
+From the report, observed serving characteristics were suitable for local production-style demos,
+with low-latency single-request inference and acceptable batch throughput.
+
+## Limitations
+
+- Cold-start behavior remains a challenge for users/items with limited history.
+- Popular-item bias can reduce novelty.
+- Current recurrent architecture can be outperformed by attention-based models on some datasets.
+
+## Future Work
+
+Recommended next steps:
+1. Add attention or Transformer-based sequential models.
+2. Incorporate side information (genre, metadata, demographics).
+3. Add debiasing or calibration for popularity effects.
+4. Evaluate with additional benchmarks and temporal holdouts.
+5. Add online/continual learning support.
+
+## Reproducibility
+
+To keep experiments repeatable:
+- Use fixed random seeds.
+- Keep `config.yml` committed alongside artifacts.
+- Save model checkpoints and metadata under `artifacts/`.
+- Track dataset variant (`ml-100k` vs `ml-1m`) in every run.
+
+## Citation
+
+```bibtex
 @software{movie_recommender_2026,
-  authors = {JoshiMinh, Jade2308},
+  author = {JoshiMinh and Jade2308},
   title = {Movie Recommendation System - Deep Learning Edition},
   year = {2026},
   url = {https://github.com/JoshiMinh/movie-recommender-dl}
 }
 ```
 
-## 📄 License
+## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License. See `LICENSE`.
 
-**Authors**: JoshiMinh, Jade2308
+## Authors
 
-## 🤝 Contributing
+- JoshiMinh
+- Jade2308
 
-Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
+## Support and Contributions
 
-## 📞 Support
-
-For questions or support, please open an issue on the GitHub repository or contact the project maintainers.
+- Open an issue for bugs, questions, or feature requests.
+- Pull requests are welcome.
+- For major changes, include a short experiment summary and metrics.
 
 ---
 
-**Last Updated**: May 2, 2026
+Last updated: May 6, 2026

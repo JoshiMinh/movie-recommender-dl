@@ -506,7 +506,7 @@ def main() -> None:
             builder_container = st.container()
             ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2])
             
-            if ctrl_col1.button("✨ Load Sample", use_container_width=True):
+            if ctrl_col1.button("✨ Load Sample", width="stretch"):
                 st.session_state["sequence_multiselect"] = list(titles.keys())[:5]
                 st.rerun()
 
@@ -521,7 +521,7 @@ def main() -> None:
                 )
             
             with ctrl_col2:
-                run_clicked = st.button("🚀 Generate", use_container_width=True, type="primary")
+                run_clicked = st.button("🚀 Generate", width="stretch", type="primary")
 
             with ctrl_col3:
                 top_k = st.slider("Predictions", min_value=1, max_value=20, value=5, label_visibility="collapsed")
@@ -582,7 +582,7 @@ def main() -> None:
             df_comp = pd.DataFrame(comparison_data)
             st.dataframe(
                 df_comp,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
