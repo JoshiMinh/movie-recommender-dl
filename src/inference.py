@@ -5,8 +5,9 @@ from typing import Dict, List
 
 import torch
 
+from src.config import Config
 from src.model import NextMovieModel
-from src.utils import load_json, read_yaml
+from src.utils import load_json
 
 
 def _pad_sequence(seq: List[int], max_seq_len: int) -> List[int]:
@@ -42,11 +43,11 @@ class RecommenderService:
 
     @classmethod
     def from_default(cls) -> "RecommenderService":
-        cfg = read_yaml("config.yml")
-        dataset_cfg = {k: v for k, v in cfg.items() if k in ["dataset", "data_path"]}
-        model_cfg = {k: v for k, v in cfg.items() if k in ["model", "embedding_dim", "hidden_size", "max_seq_len", "dropout"]}
-        dataset_name = dataset_cfg["dataset"]
-        model_name = model_cfg["model"]
+        config = Config.get()
+        dataset_cfg = config.dataset
+        model_cfg = config.model
+        dataset_name = dataset_cfg.dataset
+        model_name = model_cfg.model
         artifact_dir = Path("artifacts") / dataset_name / model_name
         if not artifact_dir.exists():
             raise FileNotFoundError(

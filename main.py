@@ -9,21 +9,12 @@ import torch
 import yaml
 
 from src.inference import RecommenderService
+from src.config import Config
 from src.dataset import DataConfig, prepare_dataloaders
 from src.metrics import evaluate_model, format_comparison_table
 from src.model import NextMovieModel
 from src.train import TrainingConfig, train_one_model
 from src.utils import ROOT_DIR, ensure_dir, read_yaml, save_json
-
-
-def load_configs(config_path: str) -> Tuple[dict, dict, dict]:
-    """Load all configurations from single config.yml file."""
-    cfg = read_yaml(config_path)
-    # Split into dataset, model, and train configs
-    dataset_cfg = {"dataset": cfg["dataset"], "data_path": cfg["data_path"]}
-    model_cfg = {k: v for k, v in cfg.items() if k in ["model", "embedding_dim", "hidden_size", "max_seq_len", "dropout"]}
-    train_cfg = {k: v for k, v in cfg.items() if k in ["batch_size", "epochs", "learning_rate", "optimizer", "top_k", "weight_decay"]}
-    return dataset_cfg, model_cfg, train_cfg
 
 
 def run_training(
@@ -32,9 +23,13 @@ def run_training(
     optimizer_override: str | None = None,
     device_override: str | None = None,
 ) -> Dict[str, Dict[str, float]]:
-    dataset_cfg, model_cfg, train_cfg = load_configs(config_path)
+    # Load configuration
+    config = Config.load(config_path)
+    dataset_cfg = config.dataset
+    model_cfg = config.model
+    train_cfg = config.train
 
-    selected_model = (model_override or model_cfg["model"]).lower()
+    selected_model = (model_override or model_cfg.model).lower()
     if selected_model == "all":
         model_names = ["rnn", "lstm", "gru"]
     elif selected_model in {"rnn", "lstm", "gru"}:
@@ -43,10 +38,10 @@ def run_training(
         raise ValueError("Model must be rnn, lstm, gru, or all")
 
     data_cfg = DataConfig(
-        dataset=dataset_cfg["dataset"],
-        data_path=dataset_cfg["data_path"],
-        max_seq_len=int(model_cfg["max_seq_len"]),
-        batch_size=int(train_cfg["batch_size"]),
+        dataset=dataset_cfg.dataset,
+        data_path=dataset_cfg.data_path,
+        max_seq_len=model_cfg.max_seq_len,
+        batch_size=train_cfg.batch_size,
     )
 
     data_bundle = prepare_dataloaders(data_cfg)
@@ -58,14 +53,14 @@ def run_training(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    optimizer_name = (optimizer_override or train_cfg["optimizer"]).lower()
+    optimizer_name = (optimizer_override or train_cfg.optimizer).lower()
 
     train_config = TrainingConfig(
-        epochs=int(train_cfg["epochs"]),
-        learning_rate=float(train_cfg["learning_rate"]),
+        epochs=train_cfg.epochs,
+        learning_rate=train_cfg.learning_rate,
         optimizer=optimizer_name,
-        weight_decay=float(train_cfg["weight_decay"]),
-        top_k=[int(k) for k in train_cfg["top_k"]],
+        weight_decay=train_cfg.weight_decay,
+        top_k=train_cfg.top_k,
     )
 
     train_loader = data_bundle["train_loader"]
@@ -79,13 +74,13 @@ def run_training(
         print(f"\n=== Training {model_name.upper()} with {optimizer_name.upper()} ===")
         model = NextMovieModel(
             num_items=num_items,
-            embedding_dim=int(model_cfg["embedding_dim"]),
-            hidden_size=int(model_cfg["hidden_size"]),
+            embedding_dim=model_cfg.embedding_dim,
+            hidden_size=model_cfg.hidden_size,
             rnn_type=model_name,
-            dropout=float(model_cfg["dropout"]),
+            dropout=model_cfg.dropout,
         )
 
-        artifact_dir = ensure_dir(ROOT_DIR / "artifacts" / dataset_cfg["dataset"] / f"{model_name}_{optimizer_name}")
+        artifact_dir = ensure_dir(ROOT_DIR / "artifacts" / dataset_cfg.dataset / f"{model_name}_{optimizer_name}")
         model_path = artifact_dir / "best_model.pt"
 
         try:
@@ -108,14 +103,14 @@ def run_training(
         comparison[model_name] = test_metrics
 
         metadata = {
-            "dataset": dataset_cfg["dataset"],
+            "dataset": dataset_cfg.dataset,
             "model": model_name,
             "optimizer": optimizer_name,
             "num_items": num_items,
-            "embedding_dim": int(model_cfg["embedding_dim"]),
-            "hidden_size": int(model_cfg["hidden_size"]),
-            "max_seq_len": int(model_cfg["max_seq_len"]),
-            "dropout": float(model_cfg["dropout"]),
+            "embedding_dim": model_cfg.embedding_dim,
+            "hidden_size": model_cfg.hidden_size,
+            "max_seq_len": model_cfg.max_seq_len,
+            "dropout": model_cfg.dropout,
             "item2idx": data_bundle["item2idx"],
             "idx2item": data_bundle["idx2item"],
             "best_val_metrics": best_val,
@@ -134,13 +129,16 @@ def run_demo(
     config_path: str,
     model_override: str | None = None,
 ) -> None:
-    dataset_cfg, model_cfg, _ = load_configs(config_path)
+    Config.load(config_path)
+    config = Config.get()
+    dataset_cfg = config.dataset
+    model_cfg = config.model
 
-    model_name = (model_override or model_cfg["model"]).lower()
+    model_name = (model_override or model_cfg.model).lower()
     if model_name == "all":
         model_name = "lstm"
 
-    artifact_dir = ROOT_DIR / "artifacts" / dataset_cfg["dataset"] / model_name
+    artifact_dir = ROOT_DIR / "artifacts" / dataset_cfg.dataset / model_name
     if not artifact_dir.exists():
         raise FileNotFoundError(
             f"Artifact {artifact_dir} does not exist. Run training first."
@@ -161,9 +159,9 @@ def run_ui() -> None:
 
 def list_datasets(config_path: str) -> List[str]:
     from src.dataset import DATASET_FILES
-    cfg = read_yaml(config_path)
-    dataset_cfg = {"data_path": cfg["data_path"]}
-    data_path = Path(dataset_cfg.get("data_path", "./data/"))
+    Config.load(config_path)
+    config = Config.get()
+    data_path = Path(config.dataset.data_path)
     if not data_path.is_absolute():
         data_path = ROOT_DIR / data_path
 
@@ -188,6 +186,8 @@ def update_dataset(config_path: str, dataset_name: str) -> None:
     cfg["dataset"] = dataset_name
     with Path(config_path).open("w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
+    # Reload config after update
+    Config.load(config_path)
 
 
 def prompt_model(default_model: str, allow_all: bool = True) -> str:
@@ -230,59 +230,28 @@ def prompt_device() -> str:
 
 def interactive_menu() -> None:
     config_path = str(ROOT_DIR / "config.yml")
+    Config.load(config_path)
 
     while True:
-        dataset_cfg, model_cfg, train_cfg = load_configs(config_path)
-        print("\n=== Movie Recommender Console ===")
-        print(f"Current dataset: {dataset_cfg['dataset']}")
-        print(f"Default model: {model_cfg['model']}")
-        print(f"Default optimizer: {train_cfg['optimizer']}")
-        print("1. Select dataset")
-        print("2. Run Train")
-        print("3. Run Comprehensive Comparison (RNN/LSTM/GRU + Adam/SGD)")
-        print("4. Demo")
-        print("5. Demo with UI")
-        print("6. Exit")
+        config = Config.get()
+        dataset_cfg = config.dataset
+        model_cfg = config.model
+        train_cfg = config.train
+        print("\n=== Movie Recommender ===")
+        print(f"Dataset: {dataset_cfg.dataset}")
+        print(f"Config: {model_cfg.model} + {train_cfg.optimizer}")
+        print("\n0. Automated Workflow (train all models + optimizers)")
+        print("1. Streamlit UI")
+        print("2. Exit")
 
-        choice = input("Choose an option [1-6]: ").strip()
+        choice = input("Choose an option [0-2]: ").strip()
 
         try:
-            if choice == "1":
-                datasets = list_datasets(config_path)
-                if not datasets:
-                    print("No datasets found under data path in config.yml.")
-                    continue
-
-                print("\nAvailable datasets:")
-                for idx, name in enumerate(datasets, start=1):
-                    marker = " (current)" if name == dataset_cfg["dataset"] else ""
-                    print(f"{idx}. {name}{marker}")
-
-                raw_index = input("Select dataset number: ").strip()
-                if not raw_index.isdigit() or int(raw_index) < 1 or int(raw_index) > len(datasets):
-                    print("Invalid dataset selection.")
-                    continue
-
-                selected_dataset = datasets[int(raw_index) - 1]
-                update_dataset(config_path, selected_dataset)
-                print(f"Dataset updated to '{selected_dataset}'.")
-
-            elif choice == "2":
-                selected_model = prompt_model(model_cfg["model"], allow_all=True)
-                selected_opt = prompt_optimizer(train_cfg["optimizer"])
-                selected_device = prompt_device()
-                run_training(
-                    config_path=config_path,
-                    model_override=selected_model,
-                    optimizer_override=selected_opt,
-                    device_override=selected_device,
-                )
-
-            elif choice == "3":
-                print("\nStarting comprehensive comparison across models and optimizers...")
+            if choice == "0":
+                print("\nStarting automated workflow...")
                 selected_device = prompt_device()
                 for opt in ["adam", "sgd"]:
-                    print(f"\n>>> TESTING OPTIMIZER: {opt.upper()} <<<")
+                    print(f"\n>>> TRAINING: {opt.upper()} OPTIMIZER <<<")
                     run_training(
                         config_path=config_path,
                         model_override="all",
@@ -290,22 +259,15 @@ def interactive_menu() -> None:
                         device_override=selected_device,
                     )
 
-            elif choice == "4":
-                selected_model = prompt_model(model_cfg["model"], allow_all=False)
-                run_demo(
-                    config_path=config_path,
-                    model_override=selected_model,
-                )
-
-            elif choice == "5":
+            elif choice == "1":
                 run_ui()
 
-            elif choice == "6":
+            elif choice == "2":
                 print("Exiting.")
                 return
 
             else:
-                print("Invalid option, select 1-6.")
+                print("Invalid option, select 0-2.")
 
         except FileNotFoundError as exc:
             print(f"Error: {exc}")

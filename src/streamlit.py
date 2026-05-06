@@ -11,9 +11,12 @@ from typing import Dict, List, Tuple
 import pandas as pd
 import streamlit as st
 
+from src.config import Config
 from src.inference import RecommenderService
-from src.utils import read_yaml
 
+
+# Initialize config at app startup
+Config.load()
 
 st.set_page_config(
     page_title="Movie Recommender Studio",
@@ -29,9 +32,18 @@ def _root_dir() -> Path:
 
 @lru_cache(maxsize=1)
 def load_configs() -> Tuple[dict, dict]:
-    cfg = read_yaml(_root_dir() / "config.yml")
-    dataset_cfg = {k: v for k, v in cfg.items() if k in ["dataset", "data_path"]}
-    model_cfg = {k: v for k, v in cfg.items() if k in ["model", "embedding_dim", "hidden_size", "max_seq_len", "dropout"]}
+    config = Config.get()
+    dataset_cfg = {
+        "dataset": config.dataset.dataset,
+        "data_path": config.dataset.data_path,
+    }
+    model_cfg = {
+        "model": config.model.model,
+        "embedding_dim": config.model.embedding_dim,
+        "hidden_size": config.model.hidden_size,
+        "max_seq_len": config.model.max_seq_len,
+        "dropout": config.model.dropout,
+    }
     return dataset_cfg, model_cfg
 
 
