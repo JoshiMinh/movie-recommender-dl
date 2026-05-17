@@ -54,8 +54,34 @@ movie-recommender-dl/
 ## Installation
 
 1. Clone the repository.
-2. Create and activate a virtual environment.
+2. Create and activate a virtual environment (examples below).
 3. Install dependencies.
+
+Windows (PowerShell):
+
+```powershell
+python -m venv .venv
+# Activate in PowerShell
+.\\.venv\\Scripts\\Activate.ps1
+# or activate in cmd.exe
+.venv\\Scripts\\activate
+```
+
+Note: if your project path contains characters like `[` or `]`, PowerShell can misread the activation script path.
+In that case, use the venv interpreter directly or activate from `cmd.exe`:
+
+```powershell
+.\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt
+```
+
+macOS / Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install project dependencies:
 
 ```bash
 pip install -r requirements.txt
