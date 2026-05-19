@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
-import zipfile
 
 import numpy as np
 import pandas as pd
@@ -13,19 +12,29 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
-from src.utils import ROOT_DIR, ensure_dir
+from src.utils import ensure_dir
 
 
 DATASET_FILES = {
-    "ml-100k": {
-        "folder": "ml-100k",
-        "interactions": "u.data",
-        "zip": "ml-100k.zip",
-    },
     "ml-1m": {
         "folder": "ml-1m",
-        "interactions": "ratings.dat",
+        "ratings": "ratings.dat",
+        "movies": "movies.dat",
+        "tags": None,
+        "genome_scores": None,
+        "genome_tags": None,
+        "url": "https://files.grouplens.org/datasets/movielens/ml-1m.zip",
         "zip": "ml-1m.zip",
+    },
+    "ml-25m": {
+        "folder": "ml-25m",
+        "ratings": "ratings.csv",
+        "movies": "movies.csv",
+        "tags": "tags.csv",
+        "genome_scores": "genome-scores.csv",
+        "genome_tags": "genome-tags.csv",
+        "url": "https://files.grouplens.org/datasets/movielens/ml-25m.zip",
+        "zip": "ml-25m.zip",
     },
 }
 
@@ -36,6 +45,7 @@ class DataConfig:
     data_path: str
     max_seq_len: int
     batch_size: int
+    max_interactions: int | None = None
 
 
 class SequenceDataset(Dataset):
@@ -50,55 +60,99 @@ class SequenceDataset(Dataset):
         return self.sequences[idx], self.targets[idx]
 
 
+def _download_file(url: str, destination: Path) -> None:
+    ensure_dir(destination.parent)
+    urllib.request.urlretrieve(url, destination)
+
+
 def _ensure_dataset_available(dataset: str, data_path: Path) -> Path:
     if dataset not in DATASET_FILES:
-        raise ValueError(f"Unsupported dataset: {dataset}. Use ml-100k or ml-1m.")
+        raise ValueError(f"Unsupported dataset: {dataset}. Use ml-1m or ml-25m.")
 
     spec = DATASET_FILES[dataset]
-    dataset_dir = data_path / spec["folder"]
-    interactions_file = dataset_dir / spec["interactions"]
-    if interactions_file.exists():
-        return interactions_file
+    dataset_dir = data_path / str(spec["folder"])
+    ratings_file = dataset_dir / str(spec["ratings"])
+    if ratings_file.exists():
+        return dataset_dir
 
-    zip_path_data = data_path / spec["zip"]
-    zip_path_root = ROOT_DIR / spec["zip"]
-    zip_path = zip_path_data if zip_path_data.exists() else zip_path_root
-
+    zip_path = data_path / str(spec["zip"])
     if not zip_path.exists():
-        raise FileNotFoundError(
-            f"Could not find {spec['interactions']} and no archive found at "
-            f"{zip_path_data} or {zip_path_root}. Place MovieLens ZIP locally."
-        )
+        _download_file(str(spec["url"]), zip_path)
 
     ensure_dir(data_path)
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(data_path)
 
-    if not interactions_file.exists():
-        raise FileNotFoundError(
-            f"Extraction completed, but {interactions_file} was not found."
-        )
-    return interactions_file
+    if not ratings_file.exists():
+        raise FileNotFoundError(f"Extraction completed, but {ratings_file} was not found.")
+    return dataset_dir
 
 
-def _load_interactions(dataset: str, interactions_path: Path) -> pd.DataFrame:
-    if dataset == "ml-100k":
+def _load_interactions(dataset: str, dataset_dir: Path) -> pd.DataFrame:
+    spec = DATASET_FILES[dataset]
+    ratings_path = dataset_dir / str(spec["ratings"])
+    if dataset == "ml-1m":
         df = pd.read_csv(
-            interactions_path,
-            sep="\t",
-            names=["user_id", "movie_id", "rating", "timestamp"],
-            engine="python",
-        )
-    else:
-        df = pd.read_csv(
-            interactions_path,
+            ratings_path,
             sep="::",
             names=["user_id", "movie_id", "rating", "timestamp"],
             engine="python",
+            encoding="latin-1",
         )
+    else:
+        df = pd.read_csv(ratings_path, usecols=["userId", "movieId", "rating", "timestamp"]).rename(
+            columns={"userId": "user_id", "movieId": "movie_id"}
+        )
+    return df.sort_values(["user_id", "timestamp"]).reset_index(drop=True)
 
-    df = df.sort_values(["user_id", "timestamp"]).reset_index(drop=True)
-    return df
+
+def _load_movies(dataset: str, dataset_dir: Path) -> pd.DataFrame:
+    spec = DATASET_FILES[dataset]
+    movies_path = dataset_dir / str(spec["movies"])
+    if dataset == "ml-1m":
+        movies = pd.read_csv(
+            movies_path,
+            sep="::",
+            engine="python",
+            names=["movie_id", "title", "genres"],
+            encoding="latin-1",
+        )
+    else:
+        movies = pd.read_csv(movies_path).rename(columns={"movieId": "movie_id"})
+    movies["movie_id"] = movies["movie_id"].astype(int)
+    movies["title"] = movies["title"].astype(str)
+    movies["genres"] = movies["genres"].fillna("(no genres listed)").astype(str)
+    return movies[["movie_id", "title", "genres"]]
+
+
+def _build_topic_map(dataset: str, dataset_dir: Path, movie_ids: set[int]) -> Dict[int, str]:
+    spec = DATASET_FILES[dataset]
+    genome_scores = spec.get("genome_scores")
+    genome_tags = spec.get("genome_tags")
+    if not genome_scores or not genome_tags:
+        return {}
+
+    scores_path = dataset_dir / str(genome_scores)
+    tags_path = dataset_dir / str(genome_tags)
+    if not scores_path.exists() or not tags_path.exists():
+        return {}
+
+    tags_df = pd.read_csv(tags_path).rename(columns={"tagId": "tag_id"})
+    tags_df["tag_id"] = tags_df["tag_id"].astype(int)
+    tags_df["tag"] = tags_df["tag"].astype(str)
+    tag_lookup = dict(zip(tags_df["tag_id"], tags_df["tag"]))
+
+    scores_df = pd.read_csv(scores_path).rename(columns={"movieId": "movie_id", "tagId": "tag_id"})
+    scores_df = scores_df[scores_df["movie_id"].isin(movie_ids)]
+    if scores_df.empty:
+        return {}
+
+    idx = scores_df.groupby("movie_id")["relevance"].idxmax()
+    top = scores_df.loc[idx, ["movie_id", "tag_id"]]
+    topic_map: Dict[int, str] = {}
+    for movie_id, tag_id in top.itertuples(index=False):
+        topic_map[int(movie_id)] = tag_lookup.get(int(tag_id), "unknown")
+    return topic_map
 
 
 def _build_item_mapping(df: pd.DataFrame) -> Tuple[Dict[int, int], Dict[int, int]]:
@@ -130,10 +184,8 @@ def _build_samples(
     if n < 4:
         return train_x, train_y, val_x, val_y, test_x, test_y
 
-    # Train on all but last two targets; reserve final two for val/test.
     for t in range(1, n - 2):
-        seq = user_items[:t]
-        train_x.append(_pad_sequence(seq, max_seq_len))
+        train_x.append(_pad_sequence(user_items[:t], max_seq_len))
         train_y.append(user_items[t])
 
     val_t = n - 2
@@ -143,17 +195,20 @@ def _build_samples(
     test_t = n - 1
     test_x.append(_pad_sequence(user_items[:test_t], max_seq_len))
     test_y.append(user_items[test_t])
-
     return train_x, train_y, val_x, val_y, test_x, test_y
 
 
 def prepare_dataloaders(config: DataConfig) -> Dict[str, object]:
     data_dir = ensure_dir(Path(config.data_path))
-    interactions_file = _ensure_dataset_available(config.dataset, data_dir)
-    interactions = _load_interactions(config.dataset, interactions_file)
+    dataset_dir = _ensure_dataset_available(config.dataset, data_dir)
+    interactions = _load_interactions(config.dataset, dataset_dir)
+    if config.max_interactions and config.max_interactions > 0:
+        interactions = interactions.iloc[: int(config.max_interactions)].copy()
+    movies = _load_movies(config.dataset, dataset_dir)
 
     item2idx, idx2item = _build_item_mapping(interactions)
     interactions["item_idx"] = interactions["movie_id"].map(item2idx)
+    movies = movies[movies["movie_id"].isin(item2idx.keys())].copy()
 
     train_x_all: List[List[int]] = []
     train_y_all: List[int] = []
@@ -179,13 +234,24 @@ def prepare_dataloaders(config: DataConfig) -> Dict[str, object]:
     val_ds = SequenceDataset(np.array(val_x_all), np.array(val_y_all))
     test_ds = SequenceDataset(np.array(test_x_all), np.array(test_y_all))
 
-    loaders = {
+    movie_titles = dict(zip(movies["movie_id"], movies["title"]))
+    movie_genres = {
+        int(row.movie_id): [g.strip() for g in str(row.genres).split("|") if g.strip()]
+        for row in movies.itertuples(index=False)
+    }
+    movie_topics = _build_topic_map(config.dataset, dataset_dir, set(item2idx.keys()))
+
+    return {
         "train_loader": DataLoader(train_ds, batch_size=config.batch_size, shuffle=True),
         "val_loader": DataLoader(val_ds, batch_size=config.batch_size, shuffle=False),
         "test_loader": DataLoader(test_ds, batch_size=config.batch_size, shuffle=False),
         "num_items": len(item2idx) + 1,
         "item2idx": item2idx,
         "idx2item": idx2item,
+        "dataset_dir": str(dataset_dir),
+        "movie_titles": movie_titles,
+        "movie_genres": movie_genres,
+        "movie_topics": movie_topics,
         "stats": {
             "interactions": len(interactions),
             "train_samples": len(train_ds),
@@ -195,52 +261,18 @@ def prepare_dataloaders(config: DataConfig) -> Dict[str, object]:
             "movies": interactions["movie_id"].nunique(),
         },
     }
-    return loaders
 
 
 # Legacy notebook compatibility helpers
-
 def download_and_extract_movielens(data_dir: str = "data") -> str:
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-
-    zip_path = os.path.join(data_dir, "ml-1m.zip")
-    extract_path = os.path.join(data_dir, "ml-1m")
-
-    if not os.path.exists(extract_path):
-        url = "http://files.grouplens.org/datasets/movielens/ml-1m.zip"
-        print(f"Downloading Movielens 1M from {url}...")
-        urllib.request.urlretrieve(url, zip_path)
-        print("Extracting...")
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(data_dir)
-        print("Extraction complete.")
-
-    return extract_path
+    root = ensure_dir(Path(data_dir))
+    return str(_ensure_dataset_available("ml-1m", root))
 
 
 def load_data(data_dir: str = "data"):
-    extract_path = download_and_extract_movielens(data_dir)
-
-    ratings_file = os.path.join(extract_path, "ratings.dat")
-    movies_file = os.path.join(extract_path, "movies.dat")
-
-    ratings_df = pd.read_csv(
-        ratings_file,
-        sep="::",
-        engine="python",
-        names=["user_id", "movie_id", "rating", "timestamp"],
-        encoding="latin-1",
-    )
-
-    movies_df = pd.read_csv(
-        movies_file,
-        sep="::",
-        engine="python",
-        names=["movie_id", "title", "genres"],
-        encoding="latin-1",
-    )
-
+    extract_path = Path(download_and_extract_movielens(data_dir))
+    ratings_df = _load_interactions("ml-1m", extract_path)
+    movies_df = _load_movies("ml-1m", extract_path)
     return ratings_df, movies_df
 
 

@@ -32,6 +32,7 @@ artifacts/
 *.ckpt
 
 # Data downloads and archives
+data/
 *.zip
 *.tar
 *.gz

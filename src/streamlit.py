@@ -1,613 +1,275 @@
 from __future__ import annotations
 
-import csv
-import io
-import re
-from functools import lru_cache
-from html import escape
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import pandas as pd
 import streamlit as st
+import torch
 
 from src.config import Config
-from src.inference import RecommenderService
+from src.utils import ExperimentInput, build_comparison_table, list_runs, run_experiment
+from src.model import NextMovieModel
 
 
-# Initialize config at app startup
 Config.load()
-
-st.set_page_config(
-    page_title="Movie Recommender Studio",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="MovieLens Recommender Lab", page_icon="🎬", layout="wide")
 
 
-def _root_dir() -> Path:
-    return Path(__file__).resolve().parent.parent
-
-
-@lru_cache(maxsize=1)
-def load_configs() -> Tuple[dict, dict]:
-    config = Config.get()
-    dataset_cfg = {
-        "dataset": config.dataset.dataset,
-        "data_path": config.dataset.data_path,
+def _config_defaults() -> dict:
+    cfg = Config.get()
+    return {
+        "dataset": cfg.dataset.dataset,
+        "data_path": cfg.dataset.data_path,
+        "model": cfg.model.model,
+        "embedding_dim": cfg.model.embedding_dim,
+        "hidden_size": cfg.model.hidden_size,
+        "max_seq_len": cfg.model.max_seq_len,
+        "dropout": cfg.model.dropout,
+        "batch_size": cfg.train.batch_size,
+        "epochs": cfg.train.epochs,
+        "learning_rate": cfg.train.learning_rate,
+        "optimizer": cfg.train.optimizer,
+        "weight_decay": cfg.train.weight_decay,
+        "top_k": cfg.train.top_k,
     }
-    model_cfg = {
-        "model": config.model.model,
-        "embedding_dim": config.model.embedding_dim,
-        "hidden_size": config.model.hidden_size,
-        "max_seq_len": config.model.max_seq_len,
-        "dropout": config.model.dropout,
-    }
-    return dataset_cfg, model_cfg
 
 
-@lru_cache(maxsize=8)
-def load_movie_titles(dataset_name: str, data_path: str) -> Dict[int, str]:
-    data_root = Path(data_path)
-    if not data_root.is_absolute():
-        data_root = _root_dir() / data_root
+def _history_frame(runs: List[Dict[str, object]]) -> pd.DataFrame:
+    rows: List[Dict[str, object]] = []
+    for run in runs:
+        hist = run.get("history", {})
+        train_losses = hist.get("train_loss", [])
+        for idx, loss in enumerate(train_losses):
+            rows.append(
+                {
+                    "Epoch": idx + 1,
+                    "Loss": loss,
+                    "Run": run.get("run_label") or run.get("run_id"),
+                    "Model": run.get("params", {}).get("model", ""),
+                    "Optimizer": run.get("params", {}).get("optimizer", ""),
+                }
+            )
+    return pd.DataFrame(rows)
 
-    dataset_root = data_root / dataset_name
-    if dataset_name == "ml-100k":
-        item_file = dataset_root / "u.item"
-        if not item_file.exists():
-            return {}
 
-        df = pd.read_csv(
-            item_file,
-            sep="|",
-            encoding="latin-1",
-            header=None,
-            usecols=[0, 1],
-            names=["movie_id", "title"],
-        )
-        return dict(zip(df["movie_id"].astype(int), df["title"].astype(str)))
+def _recommend(run_meta: Dict[str, object], user_sequence: List[int], top_k: int) -> List[int]:
+    run_id = str(run_meta["run_id"])
+    dataset = str(run_meta["params"]["dataset"])
+    run_dir = Path("artifacts") / "experiments" / dataset / run_id
+    state = torch.load(run_dir / "best_model.pt", map_location="cpu")
 
-    movies_file = dataset_root / "movies.dat"
-    if not movies_file.exists():
-        return {}
-
-    df = pd.read_csv(
-        movies_file,
-        sep="::",
-        engine="python",
-        header=None,
-        usecols=[0, 1],
-        names=["movie_id", "title"],
-        encoding="latin-1",
+    idx2item = {int(k): int(v) for k, v in run_meta["idx2item"].items()}
+    item2idx = {int(k): int(v) for k, v in run_meta["item2idx"].items()}
+    params = run_meta["params"]
+    model = NextMovieModel(
+        num_items=int(max(idx2item.keys())) + 1,
+        embedding_dim=int(params["embedding_dim"]),
+        hidden_size=int(params["hidden_size"]),
+        rnn_type=str(params["model"]),
+        dropout=float(params["dropout"]),
     )
-    return dict(zip(df["movie_id"].astype(int), df["title"].astype(str)))
+    model.load_state_dict(state)
+    model.eval()
 
-
-@lru_cache(maxsize=16)
-def load_artifact_metadata(dataset_name: str, model_name: str) -> dict:
-    metadata_path = _root_dir() / "artifacts" / dataset_name / model_name / "metadata.json"
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Artifact metadata not found: {metadata_path}")
-
-    import json
-
-    with metadata_path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-@lru_cache(maxsize=8)
-def load_service(dataset_name: str, model_name: str) -> RecommenderService:
-    artifact_dir = _root_dir() / "artifacts" / dataset_name / model_name
-    return RecommenderService(artifact_dir)
-
-
-def list_available_models(dataset_name: str) -> List[str]:
-    artifact_root = _root_dir() / "artifacts" / dataset_name
-    if not artifact_root.exists():
+    encoded = [item2idx[m] for m in user_sequence if m in item2idx]
+    if not encoded:
         return []
 
-    models: List[str] = []
-    for candidate in sorted(artifact_root.iterdir()):
-        if candidate.is_dir() and (candidate / "best_model.pt").exists() and (candidate / "metadata.json").exists():
-            models.append(candidate.name)
-    return models
+    max_seq_len = int(params["max_seq_len"])
+    seq = encoded[-max_seq_len:]
+    x = [0] * (max_seq_len - len(seq)) + seq
+    model_input = torch.tensor([x], dtype=torch.long)
+    logits = model(model_input)
+    for seen in encoded:
+        logits[0, seen] = float("-inf")
+    logits[0, 0] = float("-inf")
+    top_idx = torch.topk(logits, k=min(top_k, logits.shape[1] - 1), dim=1).indices[0].tolist()
+    return [idx2item.get(int(i), 0) for i in top_idx if idx2item.get(int(i), 0) != 0]
 
 
-def parse_sequence_input(raw_value: str, title_to_id: Dict[str, int]) -> Tuple[List[int], List[str]]:
-    tokens: List[str] = []
-    reader = csv.reader(io.StringIO(raw_value), skipinitialspace=True)
-    for row in reader:
-        for cell in row:
-            parts = [part.strip() for part in cell.split(";") if part.strip()]
-            tokens.extend(parts)
-
-    if not tokens and raw_value.strip():
-        tokens = [raw_value.strip()]
-
-    sequence: List[int] = []
-    unresolved: List[str] = []
-
-    normalized_titles = {re.sub(r"\s+", " ", title.lower()).strip(): movie_id for title, movie_id in title_to_id.items()}
-
-    for token in tokens:
-        clean_token = token.strip().strip('"').strip("'")
-        if not clean_token:
-            continue
-
-        if clean_token.isdigit():
-            sequence.append(int(clean_token))
-            continue
-
-        id_match = re.search(r"\((\d+)\)\s*$", clean_token)
-        if id_match:
-            sequence.append(int(id_match.group(1)))
-            continue
-
-        normalized_token = re.sub(r"\s+", " ", clean_token.lower()).strip()
-        movie_id = normalized_titles.get(normalized_token)
-        if movie_id is not None:
-            sequence.append(movie_id)
-            continue
-
-        matches = [movie_id for title, movie_id in title_to_id.items() if normalized_token in title.lower()]
-        if len(matches) == 1:
-            sequence.append(matches[0])
-        else:
-            unresolved.append(clean_token)
-
-    return sequence, unresolved
-
-
-def format_movie(movie_id: int, titles: Dict[int, str]) -> str:
-    title = titles.get(movie_id)
-    return f"{title} ({movie_id})" if title else f"Movie {movie_id}"
-
-
-def render_metric_card(label: str, value: str, help_text: str) -> None:
-    st.markdown(
-        f"""
-        <div class="metric-card">
-          <div class="metric-label">{label}</div>
-          <div class="metric-value">{value}</div>
-          <div class="metric-help">{help_text}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def apply_sample_sequence(sample_sequence: List[int]) -> None:
-    st.session_state["watch_sequence"] = ", ".join(str(movie_id) for movie_id in sample_sequence)
-
-
-def append_movie_to_sequence(movie_id: int) -> None:
-    existing = st.session_state.get("watch_sequence", "").strip()
-    st.session_state["watch_sequence"] = f"{existing}, {movie_id}" if existing else str(movie_id)
+def _label_frame(metric_map: Dict[str, Dict[str, float]]) -> pd.DataFrame:
+    rows = [
+        {
+            "label": label,
+            "support": int(values.get("support", 0)),
+            "top1_accuracy": values.get("top1_accuracy", 0.0),
+            "topk_hit": values.get("topk_hit", 0.0),
+        }
+        for label, values in metric_map.items()
+    ]
+    if not rows:
+        return pd.DataFrame(columns=["label", "support", "top1_accuracy", "topk_hit"])
+    return pd.DataFrame(rows).sort_values("support", ascending=False)
 
 
 def main() -> None:
-    dataset_cfg, model_cfg = load_configs()
-    dataset_name = dataset_cfg["dataset"]
-    data_path = dataset_cfg["data_path"]
+    defaults = _config_defaults()
+    st.title("MovieLens Recommender Lab")
+    st.caption("Remote MovieLens (1M/25M), training, evaluation, comparisons, and interactive inference in one app.")
 
-    available_models = list_available_models(dataset_name)
-    default_model = model_cfg["model"] if model_cfg["model"] in available_models else (available_models[0] if available_models else model_cfg["model"])
+    with st.sidebar:
+        st.header("Run Setup")
+        dataset = st.selectbox("Dataset", ["ml-1m", "ml-25m"], index=0)
+        mode = st.selectbox("Mode", ["Quick (1M-friendly)", "Full"], index=0)
+        model = st.selectbox("Model", ["rnn", "lstm", "gru"], index=1)
+        optimizer = st.selectbox("Optimizer", ["adam", "sgd"], index=0)
+        lr = st.number_input("Learning Rate", value=float(defaults["learning_rate"]), format="%.6f")
+        epochs = st.number_input("Epochs", min_value=1, max_value=100, value=int(defaults["epochs"]))
+        batch_size = st.number_input("Batch Size", min_value=16, max_value=4096, value=int(defaults["batch_size"]))
+        max_interactions = 1_000_000 if mode.startswith("Quick") else 0
+        if dataset == "ml-25m" and mode.startswith("Quick"):
+            st.info("Quick mode limits ratings to first 1,000,000 interactions.")
 
-    st.markdown(
-        """
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap');
+        col_a, col_b = st.columns(2)
+        run_baseline = col_a.button("Run Baseline", use_container_width=True)
+        run_optimized = col_b.button("Run Optimized", use_container_width=True)
 
-        :root {
-            --bg: #050506;
-            --panel: rgba(15, 15, 18, 0.75);
-            --panel-border: rgba(255, 255, 255, 0.08);
-            --text: #f8fafc;
-            --muted: #94a3b8;
-            --accent: #e11d48;
-            --accent-glow: rgba(225, 29, 72, 0.15);
-            --card-bg: rgba(255, 255, 255, 0.03);
-        }
-
-        .stApp {
-            background-color: var(--bg);
-            background-image: 
-                radial-gradient(circle at 0% 0%, rgba(225, 29, 72, 0.12) 0%, transparent 40%),
-                radial-gradient(circle at 100% 100%, rgba(225, 29, 72, 0.08) 0%, transparent 40%);
-            color: var(--text);
-            font-family: "Inter", -apple-system, sans-serif;
-        }
-
-        .block-container {
-            padding-top: 2rem;
-            max-width: 1100px;
-        }
-
-        .hero {
-            padding: 2.5rem 2rem;
-            border: 1px solid var(--panel-border);
-            border-radius: 28px;
-            background: var(--panel);
-            backdrop-filter: blur(20px);
-            margin-bottom: 2rem;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .hero::before {
-            content: "";
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background: linear-gradient(90deg, transparent, var(--accent), transparent);
-        }
-
-        .eyebrow {
-            text-transform: uppercase;
-            letter-spacing: 0.2em;
-            font-size: 0.75rem;
-            color: var(--accent);
-            margin-bottom: 0.75rem;
-            font-weight: 800;
-        }
-
-        .hero h1 {
-            margin: 0;
-            font-family: "Outfit", sans-serif;
-            font-size: clamp(2.5rem, 5vw, 4rem);
-            font-weight: 800;
-            line-height: 1.1;
-            color: white;
-            letter-spacing: -0.02em;
-        }
-
-        .hero p {
-            margin: 1.25rem 0 0;
-            max-width: 65ch;
-            font-size: 1.1rem;
-            color: var(--muted);
-            line-height: 1.6;
-        }
-
-        .metric-card {
-            padding: 1.25rem;
-            border-radius: 20px;
-            border: 1px solid var(--panel-border);
-            background: var(--card-bg);
-            transition: all 0.3s ease;
-        }
-
-        .metric-card:hover {
-            border-color: rgba(225, 29, 72, 0.3);
-            background: rgba(225, 29, 72, 0.02);
-        }
-
-        .metric-label {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            letter-spacing: 0.15em;
-            color: var(--muted);
-            margin-bottom: 0.5rem;
-            font-weight: 600;
-        }
-
-        .metric-value {
-            font-family: "Outfit", sans-serif;
-            font-size: 1.4rem;
-            font-weight: 700;
-            color: white;
-            margin-bottom: 0.25rem;
-        }
-
-        .metric-help {
-            color: var(--muted);
-            font-size: 0.8rem;
-        }
-
-        .section-title {
-            font-family: "Outfit", sans-serif;
-            font-size: 1.25rem;
-            font-weight: 700;
-            color: white;
-            margin: 2.5rem 0 1.25rem;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .section-title::after {
-            content: "";
-            height: 1px;
-            flex-grow: 1;
-            background: var(--panel-border);
-        }
-
-        .recommendation-card {
-            padding: 1.25rem;
-            border-radius: 20px;
-            border: 1px solid var(--panel-border);
-            background: var(--card-bg);
-            margin-bottom: 1rem;
-            transition: transform 0.2s ease;
-        }
-
-        .recommendation-card:hover {
-            transform: translateX(4px);
-            border-color: rgba(225, 29, 72, 0.4);
-        }
-
-        .recommendation-rank {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            letter-spacing: 0.15em;
-            color: var(--accent);
-            margin-bottom: 0.4rem;
-            font-weight: 700;
-        }
-
-        .recommendation-title {
-            font-size: 1.15rem;
-            color: white;
-            font-weight: 700;
-            margin-bottom: 0.25rem;
-        }
-
-        .recommendation-subtitle {
-            font-size: 0.9rem;
-            color: var(--muted);
-        }
-
-        /* Streamlit Overrides */
-        .stMultiSelect [data-baseweb="select"] > div {
-            border-radius: 16px;
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-        }
-
-        .stMultiSelect [data-baseweb="tag"] {
-            background: var(--accent) !important;
-            border-radius: 8px;
-            color: white !important;
-        }
-
-        .stSelectbox [data-baseweb="select"] > div {
-            border-radius: 14px;
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-        }
-
-        [data-testid="stExpander"] {
-            border-radius: 20px;
-            background: var(--panel);
-            border: 1px solid var(--panel-border) !important;
-        }
-
-        [data-testid="stMetricValue"] {
-            color: white;
-        }
-
-        .stButton button {
-            border-radius: 14px;
-            border: none;
-            background: var(--accent);
-            color: white;
-            padding: 0.6rem 1.5rem;
-            font-weight: 700;
-            transition: all 0.2s ease;
-            width: 100%;
-        }
-
-        .stButton button:hover {
-            background: #f43f5e;
-            box-shadow: 0 0 20px rgba(225, 29, 72, 0.4);
-        }
-
-        .stSlider [data-baseweb="slider"] [role="slider"] {
-            background-color: var(--accent);
-        }
-
-        .stSlider [data-baseweb="slider"] > div > div {
-            background-color: var(--accent) !important;
-        }
-
-        [data-testid="stHeader"] {
-            background: transparent;
-        }
-        
-        .stTabs [data-baseweb="tab-list"] {
-            background-color: transparent;
-            gap: 1rem;
-        }
-        
-        .stTabs [data-baseweb="tab"] {
-            height: 50px;
-            border-radius: 12px;
-            background-color: var(--panel);
-            border: 1px solid var(--panel-border);
-            color: var(--muted);
-            padding: 0 1.5rem;
-            font-weight: 600;
-        }
-        
-        .stTabs [aria-selected="true"] {
-            background-color: var(--accent) !important;
-            color: white !important;
-            border-color: var(--accent) !important;
-        }
-
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: var(--bg);
-        }
-        ::-webkit-scrollbar-thumb {
-            background: var(--panel-border);
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--accent);
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="hero">
-          <div class="eyebrow">Deep learning powered</div>
-          <h1>Recommender Studio</h1>
-          <p>Explore movie recommendations using state-of-the-art sequential models. Build your watch history below and let the neural engine predict your next favorite film.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    titles = load_movie_titles(dataset_name, data_path)
-    
-    tab_studio, tab_dashboard = st.tabs(["🎯 Recommender Studio", "📊 Performance Dashboard"])
-
-    with tab_studio:
-        # --- CONFIGURATION PANEL ---
-        st.markdown('<div class="section-title">Configuration</div>', unsafe_allow_html=True)
-        
-        m_col_select, m_col1, m_col2, m_col3 = st.columns([1.5, 1, 1, 1])
-        
-        with m_col_select:
-            model_options = available_models or [default_model]
-            selected_model = st.selectbox(
-                "Neural Checkpoint",
-                options=model_options,
-                index=model_options.index(default_model) if default_model in model_options else 0,
-                key="model_selector"
+    if run_baseline or run_optimized:
+        label = "baseline" if run_baseline else "optimized"
+        with st.spinner(f"Running {label} experiment..."):
+            exp = ExperimentInput(
+                dataset=dataset,
+                data_path=str(defaults["data_path"]),
+                model=defaults["model"] if run_baseline else model,
+                embedding_dim=int(defaults["embedding_dim"]),
+                hidden_size=int(defaults["hidden_size"]),
+                max_seq_len=int(defaults["max_seq_len"]),
+                dropout=float(defaults["dropout"]),
+                batch_size=int(defaults["batch_size"] if run_baseline else batch_size),
+                epochs=int(defaults["epochs"] if run_baseline else epochs),
+                learning_rate=float(defaults["learning_rate"] if run_baseline else lr),
+                optimizer=str(defaults["optimizer"] if run_baseline else optimizer),
+                weight_decay=float(defaults["weight_decay"]),
+                top_k=[5, 10],
+                max_interactions=max_interactions if max_interactions > 0 else None,
+                is_baseline=bool(run_baseline),
+                run_label=label,
             )
-        
-        try:
-            selected_metadata = load_artifact_metadata(dataset_name, selected_model)
-            
-            with m_col1:
-                render_metric_card("Dataset", dataset_name, "Active source")
-            with m_col2:
-                render_metric_card("Architecture", selected_metadata.get("model", "N/A").upper(), "Network type")
-            with m_col3:
-                render_metric_card("Embedding", f"{selected_metadata.get('hidden_size', 'N/A')}d", "Vector width")
+            result = run_experiment(exp)
+        st.success(f"Completed run: {result['run_id']}")
 
-            # --- SEQUENCE BUILDER ---
-            st.markdown('<div class="section-title">Sequence Builder</div>', unsafe_allow_html=True)
-            
-            movie_options = sorted(titles.keys(), key=lambda x: titles[x].lower())
-            
-            builder_container = st.container()
-            ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2])
-            
-            if ctrl_col1.button("✨ Load Sample", width="stretch"):
-                st.session_state["sequence_multiselect"] = list(titles.keys())[:5]
-                st.rerun()
+    runs = list_runs(dataset)
+    comp = build_comparison_table(runs)
 
-            with builder_container:
-                selected_ids = st.multiselect(
-                    "Your Watch History",
-                    options=movie_options,
-                    format_func=lambda x: titles.get(x, f"Movie {x}"),
-                    placeholder="Search and select movies you've watched...",
-                    help="The order of selection represents your watch sequence.",
-                    key="sequence_multiselect"
-                )
-            
-            with ctrl_col2:
-                run_clicked = st.button("🚀 Generate", width="stretch", type="primary")
+    tab_data, tab_arch, tab_opt, tab_base, tab_label, tab_demo = st.tabs(
+        [
+            "Data & Run Control",
+            "Architecture Comparison",
+            "Optimizer/LR Comparison",
+            "Baseline vs Optimized",
+            "Label Analytics",
+            "Interactive Demo",
+        ]
+    )
 
-            with ctrl_col3:
-                top_k = st.slider("Predictions", min_value=1, max_value=20, value=5, label_visibility="collapsed")
-            
-            if run_clicked:
-                if not selected_ids:
-                    st.error("Please add at least one movie to your history.")
-                else:
-                    with st.spinner("Analyzing patterns..."):
-                        service = load_service(dataset_name, selected_model)
-                        recommendations = service.recommend(selected_ids, top_k=top_k)
-                        
-                        st.markdown('<div class="section-title">Predicted Next Watches</div>', unsafe_allow_html=True)
-                        
-                        if not recommendations:
-                            st.info("No new recommendations found for this sequence.")
-                        else:
-                            grid_cols = st.columns(2)
-                            for idx, movie_id in enumerate(recommendations):
-                                with grid_cols[idx % 2]:
-                                    t = titles.get(movie_id, "Unknown Movie")
-                                    st.markdown(
-                                        f"""
-                                        <div class="recommendation-card">
-                                          <div class="recommendation-rank">Recommendation #{idx+1}</div>
-                                          <div class="recommendation-title">{t}</div>
-                                          <div class="recommendation-subtitle">ID: {movie_id}</div>
-                                        </div>
-                                        """,
-                                        unsafe_allow_html=True
-                                    )
-        except Exception as e:
-            st.error(f"Error loading model: {e}")
-
-    with tab_dashboard:
-        st.markdown('<div class="section-title">Model Comparison</div>', unsafe_allow_html=True)
-        
-        if not available_models:
-            st.warning("No trained models found. Run training in the console first.")
+    with tab_data:
+        st.subheader("Run Registry")
+        if comp.empty:
+            st.warning("No runs yet. Start by running baseline and optimized experiments.")
         else:
-            comparison_data = []
-            histories = {}
-            
-            for m_name in available_models:
-                meta = load_artifact_metadata(dataset_name, m_name)
-                metrics = meta.get("test_metrics", {})
-                comparison_data.append({
-                    "Model": m_name.upper(),
-                    "Optimizer": meta.get("optimizer", "unknown").upper(),
-                    "Hit@5": metrics.get("Hit@5", 0.0),
-                    "Hit@10": metrics.get("Hit@10", 0.0),
-                    "NDCG@10": metrics.get("NDCG@10", 0.0),
-                })
-                if "history" in meta:
-                    histories[m_name] = meta["history"]
+            st.dataframe(comp, use_container_width=True, hide_index=True)
+            stats_cols = st.columns(4)
+            stats_cols[0].metric("Total Runs", len(comp))
+            stats_cols[1].metric("Baselines", int(comp["Baseline"].sum()))
+            stats_cols[2].metric("Best Hit@10", f"{comp['Hit@10'].max():.4f}")
+            stats_cols[3].metric("Best NDCG@10", f"{comp['NDCG@10'].max():.4f}")
 
-            # Comparison Table
-            df_comp = pd.DataFrame(comparison_data)
-            st.dataframe(
-                df_comp,
-                width="stretch",
-                hide_index=True,
+    with tab_arch:
+        st.subheader("Architecture Results")
+        if comp.empty:
+            st.info("No data available.")
+        else:
+            arch_df = comp.groupby("Model", as_index=False)[["Hit@5", "Hit@10", "NDCG@10"]].max()
+            st.dataframe(arch_df, use_container_width=True, hide_index=True)
+            st.bar_chart(arch_df.set_index("Model")[["Hit@10", "NDCG@10"]])
+            hist_df = _history_frame(runs)
+            if not hist_df.empty:
+                st.line_chart(hist_df.pivot_table(index="Epoch", columns="Model", values="Loss", aggfunc="mean"))
+
+    with tab_opt:
+        st.subheader("Optimizer and Learning Rate")
+        if comp.empty:
+            st.info("No data available.")
+        else:
+            opt_df = comp.groupby(["Optimizer", "LR"], as_index=False)[["Hit@10", "NDCG@10"]].max()
+            st.dataframe(opt_df, use_container_width=True, hide_index=True)
+            st.bar_chart(opt_df.set_index(opt_df["Optimizer"] + "@" + opt_df["LR"].astype(str))[["Hit@10", "NDCG@10"]])
+            hist_df = _history_frame(runs)
+            if not hist_df.empty:
+                st.line_chart(hist_df.pivot_table(index="Epoch", columns="Optimizer", values="Loss", aggfunc="mean"))
+
+    with tab_base:
+        st.subheader("Baseline vs Optimized")
+        base = [r for r in runs if r.get("is_baseline")]
+        opt = [r for r in runs if not r.get("is_baseline")]
+        if not base or not opt:
+            st.info("Need at least one baseline and one optimized run.")
+        else:
+            base_latest = base[0]
+            opt_latest = opt[0]
+            base_metrics = base_latest.get("test_metrics", {})
+            opt_metrics = opt_latest.get("test_metrics", {})
+            compare_rows = []
+            for metric in sorted(set(base_metrics.keys()).intersection(opt_metrics.keys())):
+                b = float(base_metrics.get(metric, 0.0))
+                o = float(opt_metrics.get(metric, 0.0))
+                compare_rows.append({"metric": metric, "baseline": b, "optimized": o, "delta": o - b})
+            compare_df = pd.DataFrame(compare_rows)
+            st.dataframe(compare_df, use_container_width=True, hide_index=True)
+            st.bar_chart(compare_df.set_index("metric")[["baseline", "optimized"]])
+
+    with tab_label:
+        st.subheader("Genre and Topic Accuracy")
+        if not runs:
+            st.info("No runs yet.")
+        else:
+            selected_id = st.selectbox(
+                "Run",
+                options=[r["run_id"] for r in runs],
+                format_func=lambda rid: f"{rid} ({next((x['run_label'] for x in runs if x['run_id']==rid), '')})",
             )
+            selected = next(r for r in runs if r["run_id"] == selected_id)
 
-            # Loss Curves
-            st.markdown('<div class="section-title">Training Loss Curves</div>', unsafe_allow_html=True)
-            if not histories:
-                st.info("No training history available for current models. Retrain to see loss curves.")
-            else:
-                loss_df_list = []
-                for m_name, hist in histories.items():
-                    if "train_loss" in hist:
-                        for epoch, loss in enumerate(hist["train_loss"]):
-                            loss_df_list.append({
-                                "Epoch": epoch + 1,
-                                "Loss": loss,
-                                "Model": m_name.upper()
-                            })
-                
-                if loss_df_list:
-                    loss_df = pd.DataFrame(loss_df_list)
-                    # Use native streamlit line chart for wide support
-                    chart_data = loss_df.pivot(index="Epoch", columns="Model", values="Loss")
-                    st.line_chart(chart_data)
+            gdf = _label_frame(selected.get("genre_metrics", {}))
+            tdf = _label_frame(selected.get("topic_metrics", {}))
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Genre Metrics**")
+                st.dataframe(gdf, use_container_width=True, hide_index=True)
+                if not gdf.empty:
+                    st.bar_chart(gdf.head(20).set_index("label")[["top1_accuracy", "topk_hit"]])
+            with col2:
+                st.markdown("**Topic Metrics**")
+                if tdf.empty:
+                    st.info("No topic data available for this run/dataset.")
                 else:
-                    st.info("Training loss data is empty.")
+                    st.dataframe(tdf, use_container_width=True, hide_index=True)
+                    st.bar_chart(tdf.head(20).set_index("label")[["top1_accuracy", "topk_hit"]])
+
+    with tab_demo:
+        st.subheader("Interactive Recommendation Demo")
+        if not runs:
+            st.warning("Run an experiment first.")
+        else:
+            selected_id = st.selectbox("Inference Run", options=[r["run_id"] for r in runs], key="inference_run_id")
+            selected = next(r for r in runs if r["run_id"] == selected_id)
+            titles = {int(k): str(v) for k, v in selected.get("movie_titles", {}).items()}
+            if not titles:
+                st.warning("Movie title metadata missing.")
+            else:
+                options = sorted(titles.keys(), key=lambda x: titles[x].lower())
+                history = st.multiselect("Watch History", options=options, format_func=lambda m: f"{titles[m]} ({m})")
+                k = st.slider("Top-K", 1, 20, 5)
+                if st.button("Predict Next", type="primary"):
+                    recs = _recommend(selected, history, k)
+                    if not recs:
+                        st.info("No recommendations found.")
+                    else:
+                        for i, movie_id in enumerate(recs, start=1):
+                            st.write(f"{i}. {titles.get(movie_id, f'Movie {movie_id}')} ({movie_id})")
+
 
 if __name__ == "__main__":
     main()

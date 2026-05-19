@@ -3,18 +3,58 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
 import torch
 import yaml
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
-from src.inference import RecommenderService
 from src.config import Config
-from src.dataset import DataConfig, prepare_dataloaders
-from src.metrics import evaluate_model, format_comparison_table
+from src.dataset import DATASET_FILES, DataConfig, prepare_dataloaders
 from src.model import NextMovieModel
-from src.train import TrainingConfig, train_one_model
-from src.utils import ROOT_DIR, ensure_dir, read_yaml, save_json
+from src.utils import (
+    ROOT_DIR,
+    RecommenderService,
+    TrainingConfig,
+    ensure_dir,
+    evaluate_model,
+    format_comparison_table,
+    read_yaml,
+    save_json,
+    train_one_model,
+)
+
+
+class RecommendRequest(BaseModel):
+    user_sequence: list[int] = Field(..., min_length=1)
+    top_k: int = Field(default=3, ge=1, le=50)
+
+
+class RecommendResponse(BaseModel):
+    recommendations: list[int]
+
+
+app = FastAPI(title="Movie Recommender DL", version="1.0.0")
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.post("/recommend", response_model=RecommendResponse)
+def recommend(payload: RecommendRequest) -> RecommendResponse:
+    try:
+        config = Config.get()
+        artifact_dir = ROOT_DIR / "artifacts" / config.dataset.dataset / config.model.model
+        service = RecommenderService(artifact_dir)
+        recs = service.recommend(payload.user_sequence, top_k=payload.top_k)
+        return RecommendResponse(recommendations=recs)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 def run_training(
@@ -125,60 +165,22 @@ def run_training(
     return comparison
 
 
-def run_demo(
-    config_path: str,
-    model_override: str | None = None,
-) -> None:
-    Config.load(config_path)
-    config = Config.get()
-    dataset_cfg = config.dataset
-    model_cfg = config.model
-
-    model_name = (model_override or model_cfg.model).lower()
-    if model_name == "all":
-        model_name = "lstm"
-
-    artifact_dir = ROOT_DIR / "artifacts" / dataset_cfg.dataset / model_name
-    if not artifact_dir.exists():
-        raise FileNotFoundError(
-            f"Artifact {artifact_dir} does not exist. Run training first."
-        )
-
-    service = RecommenderService(artifact_dir)
-    sample = [1, 5, 20]
-    recs = service.recommend(sample, top_k=3)
-
-    print("Demo request:", {"user_sequence": sample})
-    print("Demo response:", {"recommendations": recs})
-
-
 def run_ui() -> None:
     ui_path = ROOT_DIR / "src" / "streamlit.py"
-    subprocess.run([sys.executable, "-m", "streamlit", "run", str(ui_path)], check=True)
-
-
-def list_datasets(config_path: str) -> List[str]:
-    from src.dataset import DATASET_FILES
-    Config.load(config_path)
-    config = Config.get()
-    data_path = Path(config.dataset.data_path)
-    if not data_path.is_absolute():
-        data_path = ROOT_DIR / data_path
-
-    if not data_path.exists():
-        return []
-
-    # Filter DATASET_FILES to those available as directory or zip
-    available = []
-    for name, spec in DATASET_FILES.items():
-        # Check if directory exists
-        if (data_path / spec["folder"]).is_dir():
-            available.append(name)
-        # Check if zip exists in data_path or root
-        elif (data_path / spec["zip"]).exists() or (ROOT_DIR / spec["zip"]).exists():
-            available.append(name)
-
-    return sorted(list(set(available)))
+    venv_python = ROOT_DIR / ".venv" / "Scripts" / "python.exe"
+    python_exec = str(venv_python) if venv_python.exists() else sys.executable
+    subprocess.run(
+        [
+            python_exec,
+            "-m",
+            "streamlit",
+            "run",
+            str(ui_path),
+            "--server.fileWatcherType",
+            "poll",
+        ],
+        check=True,
+    )
 
 
 def update_dataset(config_path: str, dataset_name: str) -> None:
@@ -190,10 +192,9 @@ def update_dataset(config_path: str, dataset_name: str) -> None:
     Config.load(config_path)
 
 
-def prompt_model(default_model: str, allow_all: bool = True) -> str:
-    allowed = ["rnn", "lstm", "gru"] + (["all", "a"] if allow_all else [])
-    prompt_suffix = " / ".join(allowed)
-    raw = input(f"Model ({prompt_suffix}) [{default_model}]: ").strip().lower()
+def prompt_model(default_model: str) -> str:
+    allowed = ["rnn", "lstm", "gru", "all", "a"]
+    raw = input(f"Model (rnn / lstm / gru / all) [{default_model}]: ").strip().lower()
     model = raw or default_model.lower()
     if model == "a":
         return "all"
@@ -201,18 +202,6 @@ def prompt_model(default_model: str, allow_all: bool = True) -> str:
         print(f"Invalid model '{model}', using default '{default_model}'.")
         return default_model.lower()
     return model
-
-
-def prompt_optimizer(default_opt: str) -> str:
-    allowed = ["sgd", "adam", "auto"]
-    raw = input(f"Optimizer (sgd / adam / auto) [{default_opt}]: ").strip().lower()
-    opt = raw or default_opt.lower()
-    if opt == "auto":
-        return "adam"
-    if opt not in allowed:
-        print(f"Invalid optimizer '{opt}', using default '{default_opt}'.")
-        return default_opt.lower()
-    return opt
 
 
 def prompt_device() -> str:
@@ -228,6 +217,27 @@ def prompt_device() -> str:
     return device
 
 
+def get_current_dataset(config_path: str) -> str:
+    Config.load(config_path)
+    return Config.get().dataset.dataset
+
+
+def set_dataset_interactive(config_path: str) -> None:
+    current = get_current_dataset(config_path)
+    supported = sorted(DATASET_FILES.keys())
+    print(f"\nCurrent dataset: {current}")
+    print(f"Supported datasets: {', '.join(supported)}")
+    choice = input(f"Set dataset [{current}]: ").strip().lower()
+    if not choice:
+        print(f"Dataset unchanged: {current}")
+        return
+    if choice not in supported:
+        print(f"Invalid dataset '{choice}'. Supported: {', '.join(supported)}")
+        return
+    update_dataset(config_path, choice)
+    print(f"Dataset updated to: {choice}")
+
+
 def interactive_menu() -> None:
     config_path = str(ROOT_DIR / "config.yml")
     Config.load(config_path)
@@ -240,34 +250,36 @@ def interactive_menu() -> None:
         print("\n=== Movie Recommender ===")
         print(f"Dataset: {dataset_cfg.dataset}")
         print(f"Config: {model_cfg.model} + {train_cfg.optimizer}")
-        print("\n0. Automated Workflow (train all models + optimizers)")
-        print("1. Streamlit UI")
-        print("2. Exit")
+        print("\n1. Set/Get Dataset")
+        print("2. Train Models (all or one)")
+        print("3. Run Streamlit")
+        print("4. Exit")
 
-        choice = input("Choose an option [0-2]: ").strip()
+        choice = input("Choose an option [1-4]: ").strip()
 
         try:
-            if choice == "0":
-                print("\nStarting automated workflow...")
-                selected_device = prompt_device()
-                for opt in ["adam", "sgd"]:
-                    print(f"\n>>> TRAINING: {opt.upper()} OPTIMIZER <<<")
-                    run_training(
-                        config_path=config_path,
-                        model_override="all",
-                        optimizer_override=opt,
-                        device_override=selected_device,
-                    )
-
-            elif choice == "1":
-                run_ui()
+            if choice == "1":
+                set_dataset_interactive(config_path)
 
             elif choice == "2":
+                selected_model = prompt_model(model_cfg.model)
+                selected_device = prompt_device()
+                run_training(
+                    config_path=config_path,
+                    model_override=selected_model,
+                    optimizer_override=train_cfg.optimizer,
+                    device_override=selected_device,
+                )
+
+            elif choice == "3":
+                run_ui()
+
+            elif choice == "4":
                 print("Exiting.")
                 return
 
             else:
-                print("Invalid option, select 0-2.")
+                print("Invalid option, select 1-4.")
 
         except FileNotFoundError as exc:
             print(f"Error: {exc}")
