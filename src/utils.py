@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -11,16 +10,12 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import pandas as pd
 import torch
-import yaml
 from torch import nn
+
+from src.settings import DEFAULTS, SUPPORTED_MODELS
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-
-
-def read_yaml(path: str | Path) -> Dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -296,12 +291,8 @@ class ExperimentInput:
     run_label: str = ""
 
 
-def _experiments_root() -> Path:
-    return ensure_dir(Path("artifacts") / "experiments")
-
-
-def _run_dir(dataset: str, run_id: str) -> Path:
-    return ensure_dir(_experiments_root() / dataset / run_id)
+def _dataset_artifact_dir(dataset: str) -> Path:
+    return ensure_dir(Path("artifacts") / dataset)
 
 
 def _safe_topics(movie_topics: Dict[int, str]) -> Dict[int, List[str]]:
@@ -312,8 +303,8 @@ def run_experiment(exp: ExperimentInput, device: str | None = None) -> Dict[str,
     from src.dataset import DataConfig, prepare_dataloaders
     from src.model import NextMovieModel
 
-    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
-    run_dir = _run_dir(exp.dataset, run_id)
+    dataset_dir = _dataset_artifact_dir(exp.dataset)
+    model_key = f"{exp.model}_{exp.optimizer}"
 
     data_cfg = DataConfig(
         dataset=exp.dataset,
@@ -341,7 +332,7 @@ def run_experiment(exp: ExperimentInput, device: str | None = None) -> Dict[str,
         top_k=exp.top_k,
     )
 
-    model_path = run_dir / "best_model.pt"
+    model_path = dataset_dir / f"{model_key}.pth"
     model, best_val, history = train_one_model(
         model=model,
         train_loader=bundle["train_loader"],
@@ -365,7 +356,7 @@ def run_experiment(exp: ExperimentInput, device: str | None = None) -> Dict[str,
     )
 
     metadata = {
-        "run_id": run_id,
+        "run_id": model_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "is_baseline": exp.is_baseline,
         "run_label": exp.run_label,
@@ -380,20 +371,20 @@ def run_experiment(exp: ExperimentInput, device: str | None = None) -> Dict[str,
         "item2idx": bundle["item2idx"],
         "idx2item": bundle["idx2item"],
     }
-    save_json(run_dir / "metadata.json", metadata)
+    save_json(dataset_dir / f"{model_key}_metadata.json", metadata)
     return metadata
 
 
 def list_runs(dataset: str) -> List[Dict[str, object]]:
-    root = _experiments_root() / dataset
+    root = _dataset_artifact_dir(dataset)
     if not root.exists():
         return []
     runs: List[Dict[str, object]] = []
-    for run_path in sorted(root.iterdir()):
-        meta = run_path / "metadata.json"
-        if meta.exists():
-            runs.append(load_json(meta))
-    runs.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
+    for model_name in SUPPORTED_MODELS:
+        candidates = sorted(root.glob(f"{model_name}_*_metadata.json"), reverse=True)
+        for candidate in candidates:
+            runs.append(load_json(candidate))
+            break
     return runs
 
 
@@ -425,11 +416,20 @@ def _pad_sequence(seq: List[int], max_seq_len: int) -> List[int]:
 
 
 class RecommenderService:
-    def __init__(self, artifact_dir: str | Path):
+    def __init__(self, artifact_dir: str | Path, model_key: str | None = None):
         from src.model import NextMovieModel
 
         self.artifact_dir = Path(artifact_dir)
-        metadata = load_json(self.artifact_dir / "metadata.json")
+        if model_key:
+            metadata_path = self.artifact_dir / f"{model_key}_metadata.json"
+            if not metadata_path.exists():
+                raise FileNotFoundError(f"Missing metadata file: {metadata_path}")
+        else:
+            metadata_candidates = sorted(self.artifact_dir.glob("*_metadata.json"))
+            if not metadata_candidates:
+                raise FileNotFoundError(f"No metadata files found in {self.artifact_dir}")
+            metadata_path = metadata_candidates[0]
+        metadata = load_json(metadata_path)
 
         self.max_seq_len = int(metadata["max_seq_len"])
         self.model_name = str(metadata["model"])
@@ -447,19 +447,32 @@ class RecommenderService:
             rnn_type=self.model_name,
             dropout=self.dropout,
         )
-        state = torch.load(self.artifact_dir / "best_model.pt", map_location="cpu")
+        model_file = self.artifact_dir / f"{self.model_name}_{metadata['optimizer']}.pth"
+        state = torch.load(model_file, map_location="cpu")
         self.model.load_state_dict(state)
         self.model.eval()
 
     @classmethod
     def from_default(cls) -> "RecommenderService":
-        from src.config import Config
+        dataset = DEFAULTS.dataset
+        dataset_dir = Path("artifacts") / dataset
 
-        config = Config.get()
-        artifact_dir = Path("artifacts") / config.dataset.dataset / config.model.model
-        if not artifact_dir.exists():
-            raise FileNotFoundError(f"Artifact directory not found: {artifact_dir}. Train a model first.")
-        return cls(artifact_dir)
+        if dataset_dir.exists():
+            if DEFAULTS.model in SUPPORTED_MODELS:
+                preferred_meta = dataset_dir / f"{DEFAULTS.model}_{DEFAULTS.optimizer}_metadata.json"
+                if preferred_meta.exists():
+                    return cls(dataset_dir, model_key=f"{DEFAULTS.model}_{DEFAULTS.optimizer}")
+
+            for model_name in ("rnn", "lstm", "gru"):
+                meta_matches = sorted(dataset_dir.glob(f"{model_name}_*_metadata.json"))
+                if meta_matches:
+                    model_key = meta_matches[0].name.replace("_metadata.json", "")
+                    return cls(dataset_dir, model_key=model_key)
+
+        raise FileNotFoundError(
+            f"No artifact directory found under {dataset_dir}. "
+            "Train a model first (expected artifacts/<dataset>/<model>_<optimizer>.pth and metadata)."
+        )
 
     @torch.no_grad()
     def recommend(self, user_sequence: List[int], top_k: int = 3) -> List[int]:

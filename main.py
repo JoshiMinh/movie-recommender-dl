@@ -1,26 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
-from pathlib import Path
 from typing import Dict
 
 import torch
-import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from src.config import Config
 from src.dataset import DATASET_FILES, DataConfig, prepare_dataloaders
 from src.model import NextMovieModel
+from src.settings import DEFAULTS, ROOT_DIR, SUPPORTED_DATASETS, SUPPORTED_MODELS
 from src.utils import (
-    ROOT_DIR,
     RecommenderService,
     TrainingConfig,
     ensure_dir,
     evaluate_model,
     format_comparison_table,
-    read_yaml,
     save_json,
     train_one_model,
 )
@@ -46,9 +43,7 @@ def health() -> dict:
 @app.post("/recommend", response_model=RecommendResponse)
 def recommend(payload: RecommendRequest) -> RecommendResponse:
     try:
-        config = Config.get()
-        artifact_dir = ROOT_DIR / "artifacts" / config.dataset.dataset / config.model.model
-        service = RecommenderService(artifact_dir)
+        service = RecommenderService.from_default()
         recs = service.recommend(payload.user_sequence, top_k=payload.top_k)
         return RecommendResponse(recommendations=recs)
     except FileNotFoundError as e:
@@ -58,30 +53,28 @@ def recommend(payload: RecommendRequest) -> RecommendResponse:
 
 
 def run_training(
-    config_path: str,
+    dataset: str,
     model_override: str | None = None,
     optimizer_override: str | None = None,
     device_override: str | None = None,
 ) -> Dict[str, Dict[str, float]]:
-    # Load configuration
-    config = Config.load(config_path)
-    dataset_cfg = config.dataset
-    model_cfg = config.model
-    train_cfg = config.train
+    dataset_name = dataset.lower()
+    if dataset_name not in SUPPORTED_DATASETS:
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
 
-    selected_model = (model_override or model_cfg.model).lower()
+    selected_model = (model_override or DEFAULTS.model).lower()
     if selected_model == "all":
-        model_names = ["rnn", "lstm", "gru"]
-    elif selected_model in {"rnn", "lstm", "gru"}:
+        model_names = list(SUPPORTED_MODELS)
+    elif selected_model in SUPPORTED_MODELS:
         model_names = [selected_model]
     else:
         raise ValueError("Model must be rnn, lstm, gru, or all")
 
     data_cfg = DataConfig(
-        dataset=dataset_cfg.dataset,
-        data_path=dataset_cfg.data_path,
-        max_seq_len=model_cfg.max_seq_len,
-        batch_size=train_cfg.batch_size,
+        dataset=dataset_name,
+        data_path=DEFAULTS.data_path,
+        max_seq_len=DEFAULTS.max_seq_len,
+        batch_size=DEFAULTS.batch_size,
     )
 
     data_bundle = prepare_dataloaders(data_cfg)
@@ -93,14 +86,14 @@ def run_training(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    optimizer_name = (optimizer_override or train_cfg.optimizer).lower()
+    optimizer_name = (optimizer_override or DEFAULTS.optimizer).lower()
 
     train_config = TrainingConfig(
-        epochs=train_cfg.epochs,
-        learning_rate=train_cfg.learning_rate,
+        epochs=DEFAULTS.epochs,
+        learning_rate=DEFAULTS.learning_rate,
         optimizer=optimizer_name,
-        weight_decay=train_cfg.weight_decay,
-        top_k=train_cfg.top_k,
+        weight_decay=DEFAULTS.weight_decay,
+        top_k=list(DEFAULTS.top_k),
     )
 
     train_loader = data_bundle["train_loader"]
@@ -109,19 +102,21 @@ def run_training(
     num_items = int(data_bundle["num_items"])
 
     comparison: Dict[str, Dict[str, float]] = {}
+    trained_model_keys: list[str] = []
 
     for model_name in model_names:
         print(f"\n=== Training {model_name.upper()} with {optimizer_name.upper()} ===")
         model = NextMovieModel(
             num_items=num_items,
-            embedding_dim=model_cfg.embedding_dim,
-            hidden_size=model_cfg.hidden_size,
+            embedding_dim=DEFAULTS.embedding_dim,
+            hidden_size=DEFAULTS.hidden_size,
             rnn_type=model_name,
-            dropout=model_cfg.dropout,
+            dropout=DEFAULTS.dropout,
         )
 
-        artifact_dir = ensure_dir(ROOT_DIR / "artifacts" / dataset_cfg.dataset / f"{model_name}_{optimizer_name}")
-        model_path = artifact_dir / "best_model.pt"
+        artifact_dir = ensure_dir(ROOT_DIR / "artifacts" / dataset_name)
+        model_key = f"{model_name}_{optimizer_name}"
+        model_path = artifact_dir / f"{model_key}.pth"
 
         try:
             model, best_val, history = train_one_model(
@@ -143,29 +138,76 @@ def run_training(
         comparison[model_name] = test_metrics
 
         metadata = {
-            "dataset": dataset_cfg.dataset,
+            "dataset": dataset_name,
             "model": model_name,
             "optimizer": optimizer_name,
             "num_items": num_items,
-            "embedding_dim": model_cfg.embedding_dim,
-            "hidden_size": model_cfg.hidden_size,
-            "max_seq_len": model_cfg.max_seq_len,
-            "dropout": model_cfg.dropout,
+            "embedding_dim": DEFAULTS.embedding_dim,
+            "hidden_size": DEFAULTS.hidden_size,
+            "max_seq_len": DEFAULTS.max_seq_len,
+            "dropout": DEFAULTS.dropout,
             "item2idx": data_bundle["item2idx"],
             "idx2item": data_bundle["idx2item"],
             "best_val_metrics": best_val,
             "test_metrics": test_metrics,
             "history": history,
         }
-        save_json(artifact_dir / "metadata.json", metadata)
+        save_json(artifact_dir / f"{model_key}_metadata.json", metadata)
+        trained_model_keys.append(model_key)
         print(f"Saved best model and metadata to: {artifact_dir}")
 
+    validate_artifact_parity(dataset_name, trained_model_keys)
     print("\n=== Test Comparison (RNN vs LSTM vs GRU) ===")
     print(format_comparison_table(comparison))
     return comparison
 
 
+def validate_artifact_parity(dataset: str, trained_model_keys: list[str]) -> None:
+    dataset_dir = ROOT_DIR / "artifacts" / dataset
+    expected_pth = sorted(f"{key}.pth" for key in trained_model_keys)
+    actual_pth = sorted(p.name for p in dataset_dir.glob("*.pth"))
+    actual_subset = sorted(name for name in actual_pth if name in expected_pth)
+
+    if actual_subset != expected_pth:
+        raise RuntimeError(
+            "Artifact parity check failed. "
+            f"Expected checkpoints: {expected_pth}. "
+            f"Found matching checkpoints: {actual_subset} under {dataset_dir}."
+        )
+
+    missing_metadata = [
+        f"{key}_metadata.json"
+        for key in trained_model_keys
+        if not (dataset_dir / f"{key}_metadata.json").exists()
+    ]
+    if missing_metadata:
+        raise RuntimeError(
+            "Artifact parity check failed. Missing metadata files: "
+            f"{missing_metadata} under {dataset_dir}."
+        )
+
+
+def _install_windows_asyncio_guard() -> None:
+    if sys.platform != "win32":
+        return
+
+    original_call_connection_lost = asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost
+
+    def _safe_call_connection_lost(self, exc):  # type: ignore[no-untyped-def]
+        try:
+            original_call_connection_lost(self, exc)
+        except ConnectionResetError:
+            return
+        except OSError as err:
+            if getattr(err, "winerror", None) == 10054:
+                return
+            raise
+
+    asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost = _safe_call_connection_lost
+
+
 def run_ui() -> None:
+    _install_windows_asyncio_guard()
     ui_path = ROOT_DIR / "src" / "streamlit.py"
     venv_python = ROOT_DIR / ".venv" / "Scripts" / "python.exe"
     python_exec = str(venv_python) if venv_python.exists() else sys.executable
@@ -181,15 +223,6 @@ def run_ui() -> None:
         ],
         check=True,
     )
-
-
-def update_dataset(config_path: str, dataset_name: str) -> None:
-    cfg = read_yaml(config_path)
-    cfg["dataset"] = dataset_name
-    with Path(config_path).open("w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False)
-    # Reload config after update
-    Config.load(config_path)
 
 
 def prompt_model(default_model: str) -> str:
@@ -217,39 +250,28 @@ def prompt_device() -> str:
     return device
 
 
-def get_current_dataset(config_path: str) -> str:
-    Config.load(config_path)
-    return Config.get().dataset.dataset
-
-
-def set_dataset_interactive(config_path: str) -> None:
-    current = get_current_dataset(config_path)
+def set_dataset_interactive(current: str) -> str:
     supported = sorted(DATASET_FILES.keys())
     print(f"\nCurrent dataset: {current}")
     print(f"Supported datasets: {', '.join(supported)}")
     choice = input(f"Set dataset [{current}]: ").strip().lower()
     if not choice:
         print(f"Dataset unchanged: {current}")
-        return
+        return current
     if choice not in supported:
         print(f"Invalid dataset '{choice}'. Supported: {', '.join(supported)}")
-        return
-    update_dataset(config_path, choice)
+        return current
     print(f"Dataset updated to: {choice}")
+    return choice
 
 
 def interactive_menu() -> None:
-    config_path = str(ROOT_DIR / "config.yml")
-    Config.load(config_path)
+    dataset_name = DEFAULTS.dataset
 
     while True:
-        config = Config.get()
-        dataset_cfg = config.dataset
-        model_cfg = config.model
-        train_cfg = config.train
         print("\n=== Movie Recommender ===")
-        print(f"Dataset: {dataset_cfg.dataset}")
-        print(f"Config: {model_cfg.model} + {train_cfg.optimizer}")
+        print(f"Dataset: {dataset_name}")
+        print(f"Config: {DEFAULTS.model} + {DEFAULTS.optimizer}")
         print("\n1. Set/Get Dataset")
         print("2. Train Models (all or one)")
         print("3. Run Streamlit")
@@ -259,15 +281,15 @@ def interactive_menu() -> None:
 
         try:
             if choice == "1":
-                set_dataset_interactive(config_path)
+                dataset_name = set_dataset_interactive(dataset_name)
 
             elif choice == "2":
-                selected_model = prompt_model(model_cfg.model)
+                selected_model = prompt_model(DEFAULTS.model)
                 selected_device = prompt_device()
                 run_training(
-                    config_path=config_path,
+                    dataset=dataset_name,
                     model_override=selected_model,
-                    optimizer_override=train_cfg.optimizer,
+                    optimizer_override=DEFAULTS.optimizer,
                     device_override=selected_device,
                 )
 

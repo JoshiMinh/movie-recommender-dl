@@ -1,34 +1,18 @@
-# MovieLens Recommender Lab (Streamlit-First)
+# MovieLens Recommender Demo
 
-This project is a Streamlit-first movie recommendation system using sequence models (RNN/LSTM/GRU) and MovieLens data.
+This project provides MovieLens sequence-model training utilities and an inference-only Streamlit demo.
 
-## What It Does
+## Streamlit Demo
 
-- Pulls **MovieLens 1M** or **MovieLens 25M** from official URLs (remote-first; no preloaded dataset required).
-- Runs the same preprocessing/training/evaluation pipeline for both datasets.
-- Recomputes baseline runs from current code defaults.
-- Runs optimized experiments (model/optimizer/LR/epochs/batch size).
-- Persists experiment artifacts and metrics for comparison.
-- Compares model quality with:
-  - ranking metrics (`Hit@K`, `NDCG@K`)
-  - label-based accuracy by **genres**
-  - label-based accuracy by **themes/topics** (MovieLens genome tags when available).
+The Streamlit app is focused on recommendation inference, not training.
 
-## Streamlit Tabs
+UI controls:
+- dataset picker (`ml-1m`, `ml-25m`)
+- model picker (`all`, `rnn`, `lstm`, `gru`) based on available runs
+- movie history input
+- run prediction button
 
-The app provides:
-
-1. `Data & Run Control`
-2. `Architecture Comparison`
-3. `Optimizer/LR Comparison`
-4. `Baseline vs Optimized`
-5. `Label Analytics`
-6. `Interactive Demo`
-
-Notebook-era outputs are recreated inside the app:
-- architecture comparison table + curves
-- optimizer/LR comparison table + curves
-- interactive recommendation workflow
+When `all` is selected, recommendations are shown separately per model.
 
 ## Run
 
@@ -39,7 +23,7 @@ streamlit run src/streamlit.py
 
 ## Notes
 
-- Default quick workflow is intended for fast `ml-1m` iteration.
-- For `ml-25m`, use full mode for complete runs, or quick mode for faster testing.
-- Experiment outputs are saved under `artifacts/experiments/`.
-- The `data/` folder is a disposable cache now. You can delete it at any time; datasets will be pulled again automatically on next run.
+- Inference metadata is loaded from `artifacts/<dataset>/<model>_<optimizer>_metadata.json`.
+- Checkpoints are loaded from `artifacts/<dataset>/<model>_<optimizer>.pth`.
+- If no runs are available for a dataset, Streamlit shows a warning instead of failing.
+- Default runtime values are centralized in `src/settings.py`.

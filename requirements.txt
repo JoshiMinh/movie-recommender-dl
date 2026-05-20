@@ -4,5 +4,4 @@ streamlit
 numpy
 pandas
 torch
-PyYAML
 pydantic
