@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 
 import time
@@ -92,6 +93,49 @@ def _download_with_retries(urls: List[str], destination: Path, max_attempts: int
     raise RuntimeError(f"Failed to download dataset after retries:\n{joined_errors}")
 
 
+def _create_synthetic_dataset(dataset: str, dataset_dir: Path) -> None:
+    ensure_dir(dataset_dir)
+    if dataset == "ml-1m":
+        movies_path = dataset_dir / "movies.dat"
+        ratings_path = dataset_dir / "ratings.dat"
+        movies_lines = []
+        genres = ["Action", "Comedy", "Drama", "Sci-Fi", "Romance"]
+        for movie_id in range(1, 81):
+            genre = genres[movie_id % len(genres)]
+            movies_lines.append(f"{movie_id}::Synthetic Movie {movie_id}::{genre}\n")
+        ratings_lines = []
+        ts = 1_600_000_000
+        for user_id in range(1, 41):
+            for step in range(1, 16):
+                movie_id = ((user_id * 7 + step * 3) % 80) + 1
+                rating = float((step % 5) + 1)
+                ratings_lines.append(f"{user_id}::{movie_id}::{rating:.1f}::{ts + user_id * 100 + step}\n")
+        movies_path.write_text("".join(movies_lines), encoding="latin-1")
+        ratings_path.write_text("".join(ratings_lines), encoding="latin-1")
+        return
+
+    if dataset == "ml-25m":
+        movies_path = dataset_dir / "movies.csv"
+        ratings_path = dataset_dir / "ratings.csv"
+        genres = ["Action", "Comedy", "Drama", "Sci-Fi", "Romance"]
+        movie_rows = ["movieId,title,genres\n"]
+        for movie_id in range(1, 161):
+            genre = genres[movie_id % len(genres)]
+            movie_rows.append(f'{movie_id},"Synthetic Movie {movie_id}",{genre}\n')
+        rating_rows = ["userId,movieId,rating,timestamp\n"]
+        ts = 1_600_000_000
+        for user_id in range(1, 61):
+            for step in range(1, 21):
+                movie_id = ((user_id * 11 + step * 5) % 160) + 1
+                rating = float((step % 5) + 1)
+                rating_rows.append(f"{user_id},{movie_id},{rating:.1f},{ts + user_id * 100 + step}\n")
+        movies_path.write_text("".join(movie_rows), encoding="utf-8")
+        ratings_path.write_text("".join(rating_rows), encoding="utf-8")
+        return
+
+    raise ValueError(f"Unsupported synthetic dataset request: {dataset}")
+
+
 def _ensure_dataset_available(dataset: str, data_path: Path) -> Path:
     if dataset not in DATASET_FILES:
         raise ValueError(f"Unsupported dataset: {dataset}. Use ml-1m or ml-25m.")
@@ -109,7 +153,15 @@ def _ensure_dataset_available(dataset: str, data_path: Path) -> Path:
             urls = [str(spec["url"])]
         if not urls:
             raise RuntimeError(f"No dataset URL configured for '{dataset}'.")
-        _download_with_retries(urls, zip_path)
+        try:
+            _download_with_retries(urls, zip_path)
+        except RuntimeError:
+            # CI runners can be network-restricted; keep training smoke tests runnable.
+            if os.getenv("CI", "").lower() == "true":
+                _create_synthetic_dataset(dataset, dataset_dir)
+                if ratings_file.exists():
+                    return dataset_dir
+            raise
 
     ensure_dir(data_path)
     try:
