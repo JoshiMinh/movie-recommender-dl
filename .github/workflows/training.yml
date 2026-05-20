@@ -29,7 +29,7 @@ jobs:
 
       - name: Run training
         run: |
-          python -c "from main import run_training; from src.settings import DEFAULTS; run_training(dataset=DEFAULTS.dataset, model_override=DEFAULTS.model, optimizer_override=DEFAULTS.optimizer, device_override='cpu')"
+          python -c "from main import run_training; from src.settings import DEFAULTS; run_training(dataset='ml-1m', model_override=DEFAULTS.model, optimizer_override=DEFAULTS.optimizer, device_override='cpu')"
 
       - name: Verify artifact parity
         run: |

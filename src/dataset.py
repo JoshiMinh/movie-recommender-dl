@@ -33,7 +33,7 @@ DATASET_FILES = {
         ],
         "zip": "ml-1m.zip",
     },
-    "ml-25m": {
+    "ml-10m": {
         "folder": "ml-25m",
         "ratings": "ratings.csv",
         "movies": "movies.csv",
@@ -47,6 +47,8 @@ DATASET_FILES = {
         "zip": "ml-25m.zip",
     },
 }
+
+ML_10M_INTERACTIONS = 10_000_000
 
 
 @dataclass
@@ -114,7 +116,7 @@ def _create_synthetic_dataset(dataset: str, dataset_dir: Path) -> None:
         ratings_path.write_text("".join(ratings_lines), encoding="latin-1")
         return
 
-    if dataset == "ml-25m":
+    if dataset == "ml-10m":
         movies_path = dataset_dir / "movies.csv"
         ratings_path = dataset_dir / "ratings.csv"
         genres = ["Action", "Comedy", "Drama", "Sci-Fi", "Romance"]
@@ -138,7 +140,7 @@ def _create_synthetic_dataset(dataset: str, dataset_dir: Path) -> None:
 
 def _ensure_dataset_available(dataset: str, data_path: Path) -> Path:
     if dataset not in DATASET_FILES:
-        raise ValueError(f"Unsupported dataset: {dataset}. Use ml-1m or ml-25m.")
+        raise ValueError(f"Unsupported dataset: {dataset}. Use ml-1m or ml-10m.")
 
     spec = DATASET_FILES[dataset]
     dataset_dir = data_path / str(spec["folder"])
@@ -293,8 +295,14 @@ def prepare_dataloaders(config: DataConfig) -> Dict[str, object]:
     data_dir = ensure_dir(Path(config.data_path))
     dataset_dir = _ensure_dataset_available(config.dataset, data_dir)
     interactions = _load_interactions(config.dataset, dataset_dir)
-    if config.max_interactions and config.max_interactions > 0:
-        interactions = interactions.iloc[: int(config.max_interactions)].copy()
+    effective_max_interactions = config.max_interactions
+    if config.dataset == "ml-10m":
+        if effective_max_interactions is None:
+            effective_max_interactions = ML_10M_INTERACTIONS
+        else:
+            effective_max_interactions = min(int(effective_max_interactions), ML_10M_INTERACTIONS)
+    if effective_max_interactions and effective_max_interactions > 0:
+        interactions = interactions.iloc[: int(effective_max_interactions)].copy()
     movies = _load_movies(config.dataset, dataset_dir)
 
     item2idx, idx2item = _build_item_mapping(interactions)

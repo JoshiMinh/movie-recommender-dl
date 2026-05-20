@@ -7,7 +7,7 @@ This project provides MovieLens sequence-model training utilities and an inferen
 The Streamlit app is focused on recommendation inference, not training.
 
 UI controls:
-- dataset picker (`ml-1m`, `ml-25m`)
+- dataset picker (`ml-1m`, `ml-10m`)
 - model picker (`all`, `rnn`, `lstm`, `gru`) based on available runs
 - movie history input
 - run prediction button

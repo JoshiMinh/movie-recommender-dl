@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
-SUPPORTED_DATASETS = ("ml-1m", "ml-25m")
+SUPPORTED_DATASETS = ("ml-1m", "ml-10m")
 SUPPORTED_MODELS = ("rnn", "lstm", "gru")
 
 DEFAULT_DATASET = "ml-1m"

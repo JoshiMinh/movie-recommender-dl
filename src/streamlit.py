@@ -8,11 +8,14 @@ from typing import Dict, List
 import streamlit as st
 import torch
 
+from src.dataset import DATASET_FILES
 from src.model import NextMovieModel
 from src.settings import (
     DEFAULT_DATASET,
+    DEFAULT_DATA_PATH,
     MAX_HISTORY_ITEMS,
     MAX_INFERENCE_TOP_K,
+    ROOT_DIR,
     SUPPORTED_DATASETS,
     SUPPORTED_MODELS,
 )
@@ -24,9 +27,9 @@ def _install_windows_asyncio_guard() -> None:
         return
     original_call_connection_lost = asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost
 
-    def _safe_call_connection_lost(self, exc):  # type: ignore[no-untyped-def]
+    def _safe_call_connection_lost(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         try:
-            original_call_connection_lost(self, exc)
+            original_call_connection_lost(self, *args, **kwargs)
         except ConnectionResetError:
             return
         except OSError as err:
@@ -38,11 +41,11 @@ def _install_windows_asyncio_guard() -> None:
 
 
 def _recommend(run_meta: Dict[str, object], user_sequence: List[int], top_k: int) -> List[int]:
-    dataset = str(run_meta["params"]["dataset"])
-    params = run_meta["params"]
+    params = _params_from_run(run_meta)
+    dataset = str(params["dataset"])
     model_name = str(params["model"])
     optimizer = str(params["optimizer"])
-    run_dir = Path("artifacts") / dataset
+    run_dir = ROOT_DIR / "artifacts" / dataset
     state = torch.load(run_dir / f"{model_name}_{optimizer}.pth", map_location="cpu")
 
     idx2item = {int(k): int(v) for k, v in run_meta["idx2item"].items()}
@@ -76,10 +79,58 @@ def _recommend(run_meta: Dict[str, object], user_sequence: List[int], top_k: int
 def _latest_runs_by_model(runs: List[Dict[str, object]]) -> Dict[str, Dict[str, object]]:
     by_model: Dict[str, Dict[str, object]] = {}
     for model_name in SUPPORTED_MODELS:
-        hit = next((r for r in runs if str(r.get("params", {}).get("model", "")).lower() == model_name), None)
+        hit = next((r for r in runs if str(_params_from_run(r).get("model", "")).lower() == model_name), None)
         if hit:
             by_model[model_name] = hit
     return by_model
+
+
+def _params_from_run(run_meta: Dict[str, object]) -> Dict[str, object]:
+    params = run_meta.get("params")
+    if isinstance(params, dict):
+        return params
+    return {
+        "dataset": run_meta.get("dataset"),
+        "model": run_meta.get("model"),
+        "optimizer": run_meta.get("optimizer"),
+        "embedding_dim": run_meta.get("embedding_dim"),
+        "hidden_size": run_meta.get("hidden_size"),
+        "max_seq_len": run_meta.get("max_seq_len"),
+        "dropout": run_meta.get("dropout"),
+    }
+
+
+def _load_titles_from_dataset(dataset: str) -> Dict[int, str]:
+    spec = DATASET_FILES.get(dataset)
+    if not spec:
+        return {}
+    dataset_dir = Path(DEFAULT_DATA_PATH) / str(spec["folder"])
+    movies_path = dataset_dir / str(spec["movies"])
+    if not movies_path.exists():
+        return {}
+
+    titles: Dict[int, str] = {}
+    if dataset == "ml-1m":
+        with movies_path.open("r", encoding="latin-1") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("::")
+                if len(parts) >= 2:
+                    try:
+                        titles[int(parts[0])] = parts[1]
+                    except ValueError:
+                        continue
+        return titles
+
+    with movies_path.open("r", encoding="utf-8") as f:
+        next(f, None)
+        for line in f:
+            parts = line.rstrip("\n").split(",", 2)
+            if len(parts) >= 2:
+                try:
+                    titles[int(parts[0])] = parts[1].strip('"')
+                except ValueError:
+                    continue
+    return titles
 
 
 def main() -> None:
@@ -116,10 +167,16 @@ def main() -> None:
     base_run = runs[0]
     titles = {int(k): str(v) for k, v in base_run.get("movie_titles", {}).items()}
     if not titles:
+        titles = _load_titles_from_dataset(dataset)
+    if not titles:
         st.warning("Movie title metadata is missing for this dataset.")
         return
 
-    options = sorted(titles.keys(), key=lambda x: titles[x].lower())
+    supported_movie_ids = {int(k) for k in base_run.get("item2idx", {}).keys()}
+    options = sorted((movie_id for movie_id in titles.keys() if movie_id in supported_movie_ids), key=lambda x: titles[x].lower())
+    if not options:
+        st.warning("No selectable movies overlap with model vocabulary for this dataset.")
+        return
     history = st.multiselect(
         "Movie Input (watch history)",
         options=options,

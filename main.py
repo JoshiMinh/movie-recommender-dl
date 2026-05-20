@@ -193,9 +193,9 @@ def _install_windows_asyncio_guard() -> None:
 
     original_call_connection_lost = asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost
 
-    def _safe_call_connection_lost(self, exc):  # type: ignore[no-untyped-def]
+    def _safe_call_connection_lost(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         try:
-            original_call_connection_lost(self, exc)
+            original_call_connection_lost(self, *args, **kwargs)
         except ConnectionResetError:
             return
         except OSError as err:
