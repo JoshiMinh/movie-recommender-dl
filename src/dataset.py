@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import shutil
+
+import time
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -23,7 +26,10 @@ DATASET_FILES = {
         "tags": None,
         "genome_scores": None,
         "genome_tags": None,
-        "url": "https://files.grouplens.org/datasets/movielens/ml-1m.zip",
+        "urls": [
+            "https://files.grouplens.org/datasets/movielens/ml-1m.zip",
+            "http://files.grouplens.org/datasets/movielens/ml-1m.zip",
+        ],
         "zip": "ml-1m.zip",
     },
     "ml-25m": {
@@ -33,7 +39,10 @@ DATASET_FILES = {
         "tags": "tags.csv",
         "genome_scores": "genome-scores.csv",
         "genome_tags": "genome-tags.csv",
-        "url": "https://files.grouplens.org/datasets/movielens/ml-25m.zip",
+        "urls": [
+            "https://files.grouplens.org/datasets/movielens/ml-25m.zip",
+            "http://files.grouplens.org/datasets/movielens/ml-25m.zip",
+        ],
         "zip": "ml-25m.zip",
     },
 }
@@ -60,9 +69,27 @@ class SequenceDataset(Dataset):
         return self.sequences[idx], self.targets[idx]
 
 
-def _download_file(url: str, destination: Path) -> None:
+def _download_file(url: str, destination: Path, timeout_seconds: int = 60) -> None:
     ensure_dir(destination.parent)
-    urllib.request.urlretrieve(url, destination)
+    with urllib.request.urlopen(url, timeout=timeout_seconds) as response, destination.open("wb") as f:
+        shutil.copyfileobj(response, f)
+
+
+def _download_with_retries(urls: List[str], destination: Path, max_attempts: int = 3) -> None:
+    errors: List[str] = []
+    for url in urls:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                _download_file(url, destination)
+                return
+            except Exception as exc:  # noqa: BLE001
+                if destination.exists():
+                    destination.unlink(missing_ok=True)
+                errors.append(f"{url} (attempt {attempt}/{max_attempts}): {exc}")
+                if attempt < max_attempts:
+                    time.sleep(2**(attempt - 1))
+    joined_errors = "\n".join(errors)
+    raise RuntimeError(f"Failed to download dataset after retries:\n{joined_errors}")
 
 
 def _ensure_dataset_available(dataset: str, data_path: Path) -> Path:
@@ -77,11 +104,23 @@ def _ensure_dataset_available(dataset: str, data_path: Path) -> Path:
 
     zip_path = data_path / str(spec["zip"])
     if not zip_path.exists():
-        _download_file(str(spec["url"]), zip_path)
+        urls = [str(url) for url in spec.get("urls", [])]
+        if not urls and "url" in spec:
+            urls = [str(spec["url"])]
+        if not urls:
+            raise RuntimeError(f"No dataset URL configured for '{dataset}'.")
+        _download_with_retries(urls, zip_path)
 
     ensure_dir(data_path)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(data_path)
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(data_path)
+    except zipfile.BadZipFile:
+        zip_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Downloaded archive {zip_path} is corrupted. "
+            "It was deleted; rerun to download a fresh copy."
+        ) from None
 
     if not ratings_file.exists():
         raise FileNotFoundError(f"Extraction completed, but {ratings_file} was not found.")
